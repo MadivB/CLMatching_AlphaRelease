@@ -23,7 +23,7 @@ python scripts/check_install.py
 #    into the path paths.yaml expects:
 mkdir -p NewMLSection/runs/ndfull_run_distributed
 curl -L -o NewMLSection/runs/ndfull_run_distributed/checkpoint.pt \
-  https://github.com/MadivB/v_alpha_test/releases/download/v0.1.0/perceiver_charge_light_relation_v_alpha_test.pt
+  https://github.com/MadivB/v_alpha_test/releases/download/v0.1.0/checkpoint.pt
 
 # 4. Verify the SHA matches release.yaml (paranoia check; recommended).
 sha256sum NewMLSection/runs/ndfull_run_distributed/checkpoint.pt
