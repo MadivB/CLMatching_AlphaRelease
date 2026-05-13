@@ -355,7 +355,10 @@ def load_perceiver_model(
     dev = torch.device(device if device else
                        ("cuda" if torch.cuda.is_available() else "cpu"))
 
-    ck = torch.load(pt_path, map_location="cpu")
+    # PyTorch 2.6+ defaults to weights_only=True; this checkpoint stores
+    # full model + meta, so we explicitly opt out.  The .pt is the
+    # repository-controlled release asset (trusted source).
+    ck = torch.load(pt_path, map_location="cpu", weights_only=False)
     if isinstance(ck, dict) and "model" in ck:
         state   = ck["model"]
         ck_meta = {k: v for k, v in ck.items() if k != "model"}
