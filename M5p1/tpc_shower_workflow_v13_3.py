@@ -1,0 +1,2788 @@
+import gc
+import os
+
+import numpy as np
+import plotly.graph_objects as go
+import psutil
+from plotly.subplots import make_subplots
+from scipy.sparse import csr_matrix
+from scipy.sparse.csgraph import connected_components
+from sklearn.neighbors import NearestNeighbors
+
+try:
+    from plottingTools import VALID_GROUP_COLORS
+except ModuleNotFoundError:
+    try:
+        from M5p1.plottingTools import VALID_GROUP_COLORS
+    except ModuleNotFoundError:
+        VALID_GROUP_COLORS = [
+            ("#1f77b4", "blue"),
+            ("#ff7f0e", "orange"),
+            ("#2ca02c", "green"),
+            ("#d62728", "red"),
+            ("#9467bd", "purple"),
+            ("#8c564b", "brown"),
+            ("#e377c2", "pink"),
+            ("#7f7f7f", "gray"),
+            ("#bcbd22", "olive"),
+            ("#17becf", "cyan"),
+        ]
+
+try:
+    from v3_2_global_matching import _shift_block
+except ModuleNotFoundError:
+    from M5p1.v3_2_global_matching import _shift_block
+
+
+DEFAULT_MEMORY_CAP_GB = 12.0
+
+DEFAULT_CLUSTERING_KWARGS_V13_3 = {
+    "knn_k": 14,
+    "density_sigma_cm": 5.5,
+    "seed_quantile": 0.82,
+    "min_seed_separation_cm": 11.0,
+    "max_seeds": 12,
+    "dist_norm_cm": 5.0,
+    "energy_weight": 0.06,
+    "keep_score_max": 0.95,
+    "min_cluster_hits": 3,
+    "promote_noise_islands": True,
+    "min_noise_island_hits": 6,
+    "min_noise_island_mean_rho_quantile": 0.50,
+    "absorb_noise": True,
+    "vote_k": 14,
+    "max_neighbor_dist_cm": 8.0,
+    "min_vote_fraction": 0.65,
+    "absorb_passes": 1,
+    "block_size": 20000,
+    "memory_cap_gb": 12.0,
+    "safety_margin_gb": 0.75,
+    "verbose": True,
+}
+
+_BOUND_NAMESPACE = {}
+
+
+def bind_notebook_namespace(namespace):
+    if namespace is None:
+        raise ValueError("namespace cannot be None")
+    _BOUND_NAMESPACE.clear()
+    _BOUND_NAMESPACE.update(namespace)
+    return _BOUND_NAMESPACE
+
+
+def _ns(name, default=None, *, required=False):
+    if name in _BOUND_NAMESPACE:
+        return _BOUND_NAMESPACE[name]
+    if required:
+        raise RuntimeError(
+            f"Notebook global '{name}' is not bound. "
+            "Pass namespace=globals() to the wrapper or call bind_notebook_namespace(globals()) first."
+        )
+    return default
+
+
+def prepare_nontrack_recluster_inputs(target_tpc):
+    """
+    Exact notebook helper from v13_3, but reading arrays from the bound notebook namespace.
+    """
+    target_tpc = int(target_tpc)
+
+    hitTPCid = np.asarray(_ns("hitTPCid", required=True), dtype=np.int32)
+    xset = _ns("xset", required=True)
+    yset = _ns("yset", required=True)
+    zset = _ns("zset", required=True)
+    Eset = _ns("Eset", required=True)
+    hit_timestamps = _ns("hit_timestamps", required=True)
+    labels_global = _ns("labels_global", required=True)
+    label_info = _ns("label_info", required=True)
+
+    tpc_mask = (hitTPCid == target_tpc)
+
+    x_tpc = np.asarray(xset[tpc_mask], dtype=np.float64)
+    y_tpc = np.asarray(yset[tpc_mask], dtype=np.float64)
+    z_tpc = np.asarray(zset[tpc_mask], dtype=np.float64)
+    E_tpc = np.asarray(Eset[tpc_mask], dtype=np.float64)
+    t_tpc = np.asarray(hit_timestamps[tpc_mask], dtype=np.float64)
+    labels_tpc = np.asarray(labels_global[tpc_mask], dtype=np.int32)
+
+    points_tpc = np.column_stack([x_tpc, y_tpc, z_tpc])
+
+    unique_labels = sorted(int(v) for v in np.unique(labels_tpc) if int(v) >= 0)
+    track_labels = [
+        int(lbl)
+        for lbl in unique_labels
+        if str(label_info.get(int(lbl), {}).get("type", "cluster")).lower() == "track"
+    ]
+
+    track_mask_tpc = np.isin(labels_tpc, np.asarray(track_labels, dtype=np.int32))
+    nontrack_mask_tpc = ~track_mask_tpc
+
+    points_nontrack = np.asarray(points_tpc[nontrack_mask_tpc], dtype=np.float64)
+    E_nontrack = np.asarray(E_tpc[nontrack_mask_tpc], dtype=np.float64)
+    t_nontrack = np.asarray(t_tpc[nontrack_mask_tpc], dtype=np.float64)
+    labels_nontrack_old = np.asarray(labels_tpc[nontrack_mask_tpc], dtype=np.int32)
+
+    prep = {
+        "target_tpc": target_tpc,
+        "x_tpc": x_tpc,
+        "y_tpc": y_tpc,
+        "z_tpc": z_tpc,
+        "E_tpc": E_tpc,
+        "t_tpc": t_tpc,
+        "labels_tpc_old": labels_tpc,
+        "points_tpc": points_tpc,
+        "track_labels": track_labels,
+        "track_mask_tpc": track_mask_tpc,
+        "nontrack_mask_tpc": nontrack_mask_tpc,
+        "points_nontrack": points_nontrack,
+        "E_nontrack": E_nontrack,
+        "t_nontrack": t_nontrack,
+        "labels_nontrack_old": labels_nontrack_old,
+    }
+
+    print(f"TPC {target_tpc}")
+    print(f"  total hits         : {len(x_tpc)}")
+    print(f"  frozen track hits  : {int(np.count_nonzero(track_mask_tpc))}")
+    print(f"  reclustered hits   : {int(np.count_nonzero(nontrack_mask_tpc))}")
+    print(f"  frozen track labels: {track_labels}")
+
+    return prep
+
+
+def _get_process_memory_bytes():
+    return int(psutil.Process(os.getpid()).memory_info().rss)
+
+
+def _format_gb(nbytes):
+    return f"{nbytes / (1024**3):.3f} GB"
+
+
+def _memory_guard_check(
+    extra_bytes_needed,
+    *,
+    memory_cap_gb=DEFAULT_MEMORY_CAP_GB,
+    safety_margin_gb=0.75,
+    where="unknown",
+    raise_on_fail=True,
+    verbose=True,
+):
+    cap_bytes = int(float(memory_cap_gb) * (1024**3))
+    margin_bytes = int(float(safety_margin_gb) * (1024**3))
+    current_bytes = _get_process_memory_bytes()
+    projected_bytes = current_bytes + int(extra_bytes_needed) + margin_bytes
+
+    ok = projected_bytes <= cap_bytes
+
+    if verbose:
+        print(
+            f"[memory guard] {where}: "
+            f"current={_format_gb(current_bytes)}, "
+            f"need~={_format_gb(int(extra_bytes_needed))}, "
+            f"margin={_format_gb(margin_bytes)}, "
+            f"projected={_format_gb(projected_bytes)}, "
+            f"cap={_format_gb(cap_bytes)}, "
+            f"ok={ok}"
+        )
+
+    if (not ok) and raise_on_fail:
+        raise MemoryError(
+            f"Refusing operation at '{where}' because projected memory "
+            f"({_format_gb(projected_bytes)}) would exceed cap "
+            f"({_format_gb(cap_bytes)})."
+        )
+
+    return ok
+
+
+def _force_cleanup():
+    gc.collect()
+
+
+def _compact_relabel(labels):
+    labels = np.asarray(labels, dtype=np.int32).copy()
+    unique = sorted(int(v) for v in np.unique(labels) if int(v) >= 0)
+
+    out = np.full(labels.shape, -1, dtype=np.int32)
+    for new_id, old_id in enumerate(unique):
+        out[labels == old_id] = int(new_id)
+    return out
+
+
+def _relabel_small_clusters_to_noise(labels, min_cluster_hits=3):
+    labels = np.asarray(labels, dtype=np.int32).copy()
+    if labels.size == 0:
+        return labels
+
+    unique = sorted(int(v) for v in np.unique(labels) if int(v) >= 0)
+    out = np.full(labels.shape, -1, dtype=np.int32)
+
+    next_id = 0
+    for old in unique:
+        mask = (labels == old)
+        if np.count_nonzero(mask) >= int(min_cluster_hits):
+            out[mask] = next_id
+            next_id += 1
+
+    return out
+
+
+def _next_cluster_id(labels):
+    labels = np.asarray(labels, dtype=np.int32)
+    good = labels[labels >= 0]
+    return 0 if good.size == 0 else int(np.max(good)) + 1
+
+
+def _plot_tpc_clustering(prep, nontrack_cluster_labels, title, save_path=None):
+    x_tpc = prep["x_tpc"]
+    y_tpc = prep["y_tpc"]
+    z_tpc = prep["z_tpc"]
+    E_tpc = prep["E_tpc"]
+
+    track_mask_tpc = prep["track_mask_tpc"]
+    nontrack_mask_tpc = prep["nontrack_mask_tpc"]
+
+    full_labels = np.full(x_tpc.shape[0], -99, dtype=np.int32)
+    full_labels[track_mask_tpc] = -2
+    full_labels[nontrack_mask_tpc] = np.asarray(nontrack_cluster_labels, dtype=np.int32)
+
+    fig = go.Figure()
+
+    if np.any(track_mask_tpc):
+        fig.add_trace(
+            go.Scatter3d(
+                x=z_tpc[track_mask_tpc],
+                y=y_tpc[track_mask_tpc],
+                z=x_tpc[track_mask_tpc],
+                mode="markers",
+                marker=dict(size=2.5, color="lightgray", opacity=0.20),
+                name=f"Frozen tracks ({int(np.count_nonzero(track_mask_tpc))} hits)",
+            )
+        )
+
+    noise_mask = (full_labels == -1)
+    if np.any(noise_mask):
+        fig.add_trace(
+            go.Scatter3d(
+                x=z_tpc[noise_mask],
+                y=y_tpc[noise_mask],
+                z=x_tpc[noise_mask],
+                mode="markers",
+                marker=dict(size=2.5, color="dimgray", opacity=0.35),
+                name=f"Unassigned / noise ({int(np.count_nonzero(noise_mask))} hits)",
+            )
+        )
+
+    cluster_ids = sorted(int(v) for v in np.unique(full_labels) if int(v) >= 0)
+    cluster_energy = {
+        cid: float(np.sum(E_tpc[full_labels == int(cid)]))
+        for cid in cluster_ids
+    }
+    cluster_ids = sorted(cluster_ids, key=lambda cid: -cluster_energy[cid])
+
+    for i, cid in enumerate(cluster_ids):
+        mask = (full_labels == int(cid))
+        color_hex, color_name = VALID_GROUP_COLORS[i % len(VALID_GROUP_COLORS)]
+        fig.add_trace(
+            go.Scatter3d(
+                x=z_tpc[mask],
+                y=y_tpc[mask],
+                z=x_tpc[mask],
+                mode="markers",
+                marker=dict(size=3.0, color=color_hex, opacity=0.90),
+                name=(
+                    f"{color_name} - cluster {cid} "
+                    f"({int(np.count_nonzero(mask))} hits, E={cluster_energy[cid]:.1f} MeV)"
+                ),
+            )
+        )
+
+    fig.update_layout(
+        scene=dict(xaxis_title="z", yaxis_title="y", zaxis_title="x"),
+        margin=dict(l=0, r=0, b=0, t=45),
+        title=title,
+        showlegend=True,
+    )
+
+    if save_path is not None:
+        fig.write_html(save_path)
+        print(f"Saved html: {save_path}")
+
+    fig.show()
+    return full_labels
+
+
+def _local_energy_density_fast(
+    points,
+    energies,
+    *,
+    knn_k=16,
+    sigma_cm=6.0,
+    memory_cap_gb=DEFAULT_MEMORY_CAP_GB,
+    safety_margin_gb=0.75,
+    verbose=True,
+):
+    points = np.asarray(points, dtype=np.float64)
+    energies = np.asarray(energies, dtype=np.float64)
+
+    n = len(points)
+    if n == 0:
+        return np.zeros(0, dtype=np.float64)
+    if n == 1:
+        return np.ones(1, dtype=np.float64)
+
+    k_use = min(int(knn_k) + 1, n)
+
+    est_bytes = (n * k_use * 8 + n * k_use * 8 + n * 8 + n * 8)
+    _memory_guard_check(
+        est_bytes,
+        memory_cap_gb=memory_cap_gb,
+        safety_margin_gb=safety_margin_gb,
+        where="_local_energy_density_fast / kneighbors",
+        verbose=verbose,
+    )
+
+    nbrs = NearestNeighbors(n_neighbors=k_use, algorithm="ball_tree").fit(points)
+    dists, inds = nbrs.kneighbors(points)
+
+    loge = np.log1p(np.clip(energies, 0.0, None))
+    rho = np.zeros(n, dtype=np.float64)
+
+    two_sigma2 = 2.0 * float(sigma_cm) * float(sigma_cm)
+    for i in range(n):
+        dd = dists[i, 1:]
+        jj = inds[i, 1:]
+        w = np.exp(-(dd * dd) / two_sigma2)
+        rho[i] = np.sum((1.0 + 0.25 * loge[jj]) * w)
+
+    del dists, inds, nbrs, loge
+    _force_cleanup()
+
+    return rho
+
+
+def _choose_density_peak_seeds_fast(
+    points,
+    rho,
+    *,
+    min_seed_separation_cm=10.0,
+    rho_quantile=0.80,
+    max_seeds=12,
+):
+    points = np.asarray(points, dtype=np.float64)
+    rho = np.asarray(rho, dtype=np.float64)
+
+    if rho.size == 0:
+        return np.zeros(0, dtype=np.int32)
+
+    thr = float(np.quantile(rho, rho_quantile))
+    order = np.argsort(rho)[::-1]
+
+    seeds = []
+    sep2 = float(min_seed_separation_cm) ** 2
+
+    for idx in order:
+        idx = int(idx)
+        if rho[idx] < thr:
+            break
+
+        p = points[idx]
+        okay = True
+        for s in seeds:
+            diff = p - points[s]
+            if float(np.dot(diff, diff)) < sep2:
+                okay = False
+                break
+
+        if okay:
+            seeds.append(idx)
+            if len(seeds) >= int(max_seeds):
+                break
+
+    if len(seeds) == 0:
+        seeds = [int(np.argmax(rho))]
+
+    return np.asarray(seeds, dtype=np.int32)
+
+
+def _build_fragment_graph_fast(
+    points,
+    energies,
+    *,
+    knn_k=16,
+    dist_norm_cm=6.0,
+    energy_weight=0.10,
+    keep_score_max=1.25,
+    memory_cap_gb=DEFAULT_MEMORY_CAP_GB,
+    safety_margin_gb=0.75,
+    verbose=True,
+):
+    points = np.asarray(points, dtype=np.float64)
+    energies = np.asarray(energies, dtype=np.float64)
+
+    n = len(points)
+    if n <= 1:
+        return csr_matrix((n, n), dtype=np.float64)
+
+    k_use = min(int(knn_k) + 1, n)
+
+    max_undirected_edges = n * max(k_use - 1, 0) // 2
+    est_kept_directed_edges = 2 * max_undirected_edges
+
+    est_bytes = (
+        n * k_use * 8
+        + n * k_use * 8
+        + n * 8
+        + est_kept_directed_edges * 4
+        + est_kept_directed_edges * 4
+        + est_kept_directed_edges * 8
+    )
+
+    _memory_guard_check(
+        est_bytes,
+        memory_cap_gb=memory_cap_gb,
+        safety_margin_gb=safety_margin_gb,
+        where="_build_fragment_graph_fast / kneighbors+edges",
+        verbose=verbose,
+    )
+
+    nbrs = NearestNeighbors(n_neighbors=k_use, algorithm="ball_tree").fit(points)
+    dists, inds = nbrs.kneighbors(points)
+    loge = np.log1p(np.clip(energies, 0.0, None))
+
+    ii = []
+    jj = []
+
+    for i in range(n):
+        for m in range(1, k_use):
+            j = int(inds[i, m])
+            if j <= i:
+                continue
+
+            dij = float(dists[i, m])
+            score = dij / float(dist_norm_cm) - float(energy_weight) * min(loge[i], loge[j])
+
+            if score <= float(keep_score_max):
+                ii.append(i)
+                jj.append(j)
+                ii.append(j)
+                jj.append(i)
+
+    if len(ii) == 0:
+        graph = csr_matrix((n, n), dtype=np.float64)
+    else:
+        ii = np.asarray(ii, dtype=np.int32)
+        jj = np.asarray(jj, dtype=np.int32)
+        data = np.ones(len(ii), dtype=np.float64)
+        graph = csr_matrix((data, (ii, jj)), shape=(n, n), dtype=np.float64)
+
+    del dists, inds, nbrs, loge
+    _force_cleanup()
+
+    return graph
+
+
+def _assign_components_from_seeds_memory_safe(
+    points,
+    components,
+    seeds,
+    *,
+    block_size=20000,
+    memory_cap_gb=DEFAULT_MEMORY_CAP_GB,
+    safety_margin_gb=0.75,
+    verbose=True,
+):
+    points = np.asarray(points, dtype=np.float64)
+    components = np.asarray(components, dtype=np.int32)
+    seeds = np.asarray(seeds, dtype=np.int32)
+
+    labels = np.full(len(points), -1, dtype=np.int32)
+
+    comp_ids = sorted(int(v) for v in np.unique(components))
+    next_label = 0
+
+    for comp in comp_ids:
+        idx = np.where(components == comp)[0]
+        if idx.size == 0:
+            continue
+
+        seeds_here = [int(s) for s in seeds if components[s] == comp]
+
+        if len(seeds_here) == 0:
+            continue
+
+        if len(seeds_here) == 1:
+            labels[idx] = next_label
+            next_label += 1
+            continue
+
+        seed_pts = points[seeds_here]
+        n_seeds_here = seed_pts.shape[0]
+
+        for start in range(0, idx.size, int(block_size)):
+            stop = min(start + int(block_size), idx.size)
+            block_idx = idx[start:stop]
+            block_pts = points[block_idx]
+
+            est_bytes = block_pts.shape[0] * n_seeds_here * 3 * 8 + block_pts.shape[0] * n_seeds_here * 8
+            _memory_guard_check(
+                est_bytes,
+                memory_cap_gb=memory_cap_gb,
+                safety_margin_gb=safety_margin_gb,
+                where="_assign_components_from_seeds_memory_safe / block distance",
+                verbose=verbose,
+            )
+
+            diff = block_pts[:, None, :] - seed_pts[None, :, :]
+            d2 = np.sum(diff * diff, axis=2)
+            nearest = np.argmin(d2, axis=1)
+
+            for k in range(n_seeds_here):
+                sub_block = block_idx[nearest == k]
+                if sub_block.size > 0:
+                    labels[sub_block] = next_label + k
+
+            del diff, d2, nearest, block_pts
+            _force_cleanup()
+
+        next_label += n_seeds_here
+
+    return labels
+
+
+def _promote_noise_islands_to_clusters(
+    points,
+    energies,
+    labels,
+    graph,
+    *,
+    min_noise_island_hits=6,
+    min_noise_island_mean_rho_quantile=0.45,
+    rho=None,
+):
+    points = np.asarray(points, dtype=np.float64)
+    np.asarray(energies, dtype=np.float64)
+    labels = np.asarray(labels, dtype=np.int32).copy()
+    rho = None if rho is None else np.asarray(rho, dtype=np.float64)
+
+    noise_idx = np.where(labels < 0)[0]
+    if noise_idx.size == 0:
+        return labels
+
+    subgraph = graph[noise_idx][:, noise_idx]
+    if subgraph.shape[0] == 0:
+        return labels
+
+    _, noise_comp = connected_components(subgraph, directed=False, return_labels=True)
+    noise_comp = np.asarray(noise_comp, dtype=np.int32)
+
+    next_id = _next_cluster_id(labels)
+
+    rho_thr = None
+    if rho is not None and rho.size > 0:
+        rho_thr = float(np.quantile(rho, float(min_noise_island_mean_rho_quantile)))
+
+    for cid in sorted(int(v) for v in np.unique(noise_comp)):
+        local = np.where(noise_comp == cid)[0]
+        global_idx = noise_idx[local]
+
+        if global_idx.size < int(min_noise_island_hits):
+            continue
+
+        if rho_thr is not None:
+            mean_rho = float(np.mean(rho[global_idx]))
+            if mean_rho < rho_thr:
+                continue
+
+        labels[global_idx] = next_id
+        next_id += 1
+
+    return labels
+
+
+def _absorb_noise_by_neighbor_vote(
+    points,
+    energies,
+    labels,
+    *,
+    vote_k=18,
+    max_neighbor_dist_cm=10.0,
+    min_vote_fraction=0.55,
+    min_cluster_hits_after=3,
+    n_passes=3,
+    memory_cap_gb=DEFAULT_MEMORY_CAP_GB,
+    safety_margin_gb=0.75,
+    verbose=True,
+):
+    points = np.asarray(points, dtype=np.float64)
+    energies = np.asarray(energies, dtype=np.float64)
+    labels = np.asarray(labels, dtype=np.int32).copy()
+
+    n = len(points)
+    if n == 0:
+        return labels
+
+    k_use = min(int(vote_k) + 1, n)
+
+    est_bytes = (n * k_use * 8 + n * k_use * 8 + n * 8)
+    _memory_guard_check(
+        est_bytes,
+        memory_cap_gb=memory_cap_gb,
+        safety_margin_gb=safety_margin_gb,
+        where="_absorb_noise_by_neighbor_vote / kneighbors",
+        verbose=verbose,
+    )
+
+    nbrs = NearestNeighbors(n_neighbors=k_use, algorithm="ball_tree").fit(points)
+    dists, inds = nbrs.kneighbors(points)
+
+    loge = np.log1p(np.clip(energies, 0.0, None))
+
+    for ipass in range(int(n_passes)):
+        changed = 0
+        new_labels = labels.copy()
+
+        noise_idx = np.where(labels < 0)[0]
+        if noise_idx.size == 0:
+            break
+
+        for i in noise_idx:
+            neigh = inds[i, 1:]
+            dd = dists[i, 1:]
+
+            valid = dd <= float(max_neighbor_dist_cm)
+            if not np.any(valid):
+                continue
+
+            neigh = neigh[valid]
+            dd = dd[valid]
+
+            neigh_labels = labels[neigh]
+            good = neigh_labels >= 0
+            if not np.any(good):
+                continue
+
+            neigh = neigh[good]
+            dd = dd[good]
+            neigh_labels = neigh_labels[good]
+
+            if neigh_labels.size == 0:
+                continue
+
+            weights = (1.0 / (dd + 0.5)) * (1.0 + 0.15 * loge[neigh])
+
+            unique_labels = np.unique(neigh_labels)
+            vote_sums = []
+            for cid in unique_labels:
+                vote_sums.append(np.sum(weights[neigh_labels == cid]))
+            vote_sums = np.asarray(vote_sums, dtype=np.float64)
+
+            best_pos = int(np.argmax(vote_sums))
+            best_cid = int(unique_labels[best_pos])
+            best_vote = float(vote_sums[best_pos])
+            total_vote = float(np.sum(vote_sums))
+
+            if total_vote <= 0:
+                continue
+
+            frac = best_vote / total_vote
+            if frac >= float(min_vote_fraction):
+                new_labels[i] = best_cid
+                changed += 1
+
+        labels = new_labels
+        labels = _relabel_small_clusters_to_noise(labels, min_cluster_hits=min_cluster_hits_after)
+        labels = _compact_relabel(labels)
+
+        if verbose:
+            print(f"  noise absorption pass {ipass + 1}: changed={changed}")
+
+        if changed == 0:
+            break
+
+    del dists, inds, nbrs, loge
+    _force_cleanup()
+
+    return labels
+
+
+def run_shower_fragment_clustering_tpc_memory_safe(
+    prep,
+    *,
+    knn_k=16,
+    density_sigma_cm=6.0,
+    seed_quantile=0.80,
+    min_seed_separation_cm=10.0,
+    max_seeds=12,
+    dist_norm_cm=6.0,
+    energy_weight=0.10,
+    keep_score_max=1.25,
+    min_cluster_hits=3,
+    promote_noise_islands=True,
+    min_noise_island_hits=6,
+    min_noise_island_mean_rho_quantile=0.45,
+    absorb_noise=True,
+    vote_k=18,
+    max_neighbor_dist_cm=10.0,
+    min_vote_fraction=0.55,
+    absorb_passes=3,
+    block_size=20000,
+    memory_cap_gb=12.0,
+    safety_margin_gb=0.75,
+    make_plot=True,
+    save_path=None,
+    verbose=True,
+):
+    pts = np.asarray(prep["points_nontrack"], dtype=np.float64)
+    E = np.asarray(prep["E_nontrack"], dtype=np.float64)
+
+    if verbose:
+        print(f"TPC {prep['target_tpc']} memory-safe shower clustering")
+        print(f"  frozen track hits     : {int(np.count_nonzero(prep['track_mask_tpc']))}")
+        print(f"  reclustered nontracks : {pts.shape[0]}")
+        print(f"  memory cap            : {memory_cap_gb:.2f} GB")
+        print(f"  safety margin         : {safety_margin_gb:.2f} GB")
+
+    if pts.shape[0] == 0:
+        labels = np.zeros(0, dtype=np.int32)
+        full_labels = None
+        if make_plot:
+            full_labels = _plot_tpc_clustering(
+                prep,
+                labels,
+                f"TPC {prep['target_tpc']} | memory-safe shower clustering (empty)",
+                save_path,
+            )
+        return {
+            "method": "shower_fragment_memory_safe",
+            "nontrack_labels": labels,
+            "full_labels": full_labels,
+            "rho": np.zeros(0, dtype=np.float64),
+            "seed_indices": np.zeros(0, dtype=np.int32),
+            "component_labels": np.zeros(0, dtype=np.int32),
+        }
+
+    base_est = pts.nbytes + E.nbytes
+    _memory_guard_check(
+        base_est,
+        memory_cap_gb=memory_cap_gb,
+        safety_margin_gb=safety_margin_gb,
+        where="run_shower_fragment_clustering_tpc_memory_safe / base arrays",
+        verbose=verbose,
+    )
+
+    rho = _local_energy_density_fast(
+        pts,
+        E,
+        knn_k=knn_k,
+        sigma_cm=density_sigma_cm,
+        memory_cap_gb=memory_cap_gb,
+        safety_margin_gb=safety_margin_gb,
+        verbose=verbose,
+    )
+
+    seeds = _choose_density_peak_seeds_fast(
+        pts,
+        rho,
+        min_seed_separation_cm=min_seed_separation_cm,
+        rho_quantile=seed_quantile,
+        max_seeds=max_seeds,
+    )
+
+    if verbose:
+        print(f"  chosen seeds          : {len(seeds)}")
+
+    graph = _build_fragment_graph_fast(
+        pts,
+        E,
+        knn_k=knn_k,
+        dist_norm_cm=dist_norm_cm,
+        energy_weight=energy_weight,
+        keep_score_max=keep_score_max,
+        memory_cap_gb=memory_cap_gb,
+        safety_margin_gb=safety_margin_gb,
+        verbose=verbose,
+    )
+
+    if verbose:
+        print(f"  graph nnz             : {graph.nnz}")
+
+    _memory_guard_check(
+        max(graph.nnz * 16, pts.shape[0] * 16),
+        memory_cap_gb=memory_cap_gb,
+        safety_margin_gb=safety_margin_gb,
+        where="connected_components",
+        verbose=verbose,
+    )
+    _, comp = connected_components(graph, directed=False, return_labels=True)
+    comp = np.asarray(comp, dtype=np.int32)
+
+    labels = _assign_components_from_seeds_memory_safe(
+        pts,
+        comp,
+        seeds,
+        block_size=block_size,
+        memory_cap_gb=memory_cap_gb,
+        safety_margin_gb=safety_margin_gb,
+        verbose=verbose,
+    )
+
+    labels = _compact_relabel(labels)
+    labels = _relabel_small_clusters_to_noise(labels, min_cluster_hits=min_cluster_hits)
+    labels = _compact_relabel(labels)
+
+    if verbose:
+        print(
+            f"  after seed assignment : clusters={len([v for v in np.unique(labels) if v >= 0])}, "
+            f"noise={int(np.count_nonzero(labels < 0))}"
+        )
+
+    if promote_noise_islands:
+        labels = _promote_noise_islands_to_clusters(
+            pts,
+            E,
+            labels,
+            graph,
+            min_noise_island_hits=min_noise_island_hits,
+            min_noise_island_mean_rho_quantile=min_noise_island_mean_rho_quantile,
+            rho=rho,
+        )
+        labels = _compact_relabel(labels)
+        labels = _relabel_small_clusters_to_noise(labels, min_cluster_hits=min_cluster_hits)
+        labels = _compact_relabel(labels)
+
+        if verbose:
+            print(
+                f"  after island promote  : clusters={len([v for v in np.unique(labels) if v >= 0])}, "
+                f"noise={int(np.count_nonzero(labels < 0))}"
+            )
+
+    if absorb_noise:
+        labels = _absorb_noise_by_neighbor_vote(
+            pts,
+            E,
+            labels,
+            vote_k=vote_k,
+            max_neighbor_dist_cm=max_neighbor_dist_cm,
+            min_vote_fraction=min_vote_fraction,
+            min_cluster_hits_after=min_cluster_hits,
+            n_passes=absorb_passes,
+            memory_cap_gb=memory_cap_gb,
+            safety_margin_gb=safety_margin_gb,
+            verbose=verbose,
+        )
+        labels = _compact_relabel(labels)
+
+        if verbose:
+            print(
+                f"  after noise absorb    : clusters={len([v for v in np.unique(labels) if v >= 0])}, "
+                f"noise={int(np.count_nonzero(labels < 0))}"
+            )
+
+    full_labels = None
+
+    if make_plot:
+        est_plot_bytes = (
+            prep["x_tpc"].nbytes
+            + prep["y_tpc"].nbytes
+            + prep["z_tpc"].nbytes
+            + prep["E_tpc"].nbytes
+            + labels.nbytes
+            + max(pts.shape[0], prep["x_tpc"].shape[0]) * 32
+        )
+        can_plot = _memory_guard_check(
+            est_plot_bytes,
+            memory_cap_gb=memory_cap_gb,
+            safety_margin_gb=safety_margin_gb,
+            where="plotting",
+            raise_on_fail=False,
+            verbose=verbose,
+        )
+
+        if can_plot:
+            title = f"TPC {prep['target_tpc']} | Memory-safe shower clustering (tracks frozen, seeds={len(seeds)})"
+            full_labels = _plot_tpc_clustering(prep, labels, title, save_path)
+        else:
+            print("[memory guard] Skipping plot because it may exceed memory cap.")
+
+    if verbose:
+        print("Summary")
+        print(f"  final nontrack groups : {len([v for v in np.unique(labels) if v >= 0])}")
+        print(f"  noise / unassigned    : {int(np.count_nonzero(labels < 0))}")
+        print(f"  final RSS             : {_format_gb(_get_process_memory_bytes())}")
+
+    return {
+        "method": "shower_fragment_memory_safe",
+        "nontrack_labels": labels,
+        "full_labels": full_labels,
+        "rho": rho,
+        "seed_indices": seeds,
+        "component_labels": comp,
+        "graph": graph,
+    }
+
+
+def run_shower_fragment_clustering_tpc_memory_safe_default(prep, save_path=None):
+    kwargs = dict(DEFAULT_CLUSTERING_KWARGS_V13_3)
+    kwargs.update({"make_plot": save_path is not None, "save_path": save_path})
+    return run_shower_fragment_clustering_tpc_memory_safe(prep, **kwargs)
+
+
+def build_tpc_tracks_only_light_debug(
+    prep,
+    *,
+    pulse_peak_tick=105,
+    deficit_half_window_ticks=18,
+    actual_clip_for_display=None,
+):
+    target_tpc = int(prep["target_tpc"])
+
+    fullLightWaveform = _ns("fullLightWaveform", required=True)
+    fullLightStd = _ns("fullLightStd", required=True)
+    saturated_channel_cache = _ns("saturated_channel_cache")
+    imageMaps = _ns("imageMaps", required=True)
+    assignment_info = _ns("assignment_info", default={})
+    labels_global = _ns("labels_global", required=True)
+    hitTPCid = _ns("hitTPCid", required=True)
+    hit_timestamps = _ns("hit_timestamps", required=True)
+    t0Candidates = _ns("t0Candidates", required=True)
+
+    actual_full = np.asarray(fullLightWaveform[target_tpc], dtype=np.float64).copy()
+    actual_std_full = np.asarray(fullLightStd[target_tpc], dtype=np.float64).copy()
+
+    if saturated_channel_cache is not None:
+        veto_mask = np.asarray(saturated_channel_cache["veto_mask"][target_tpc], dtype=bool)
+    else:
+        veto_mask = np.zeros(actual_full.shape[0], dtype=bool)
+
+    keep_mask = ~veto_mask
+    keep_idx = np.flatnonzero(keep_mask).astype(np.int32)
+    veto_idx = np.flatnonzero(veto_mask).astype(np.int32)
+
+    actual_kept = np.asarray(actual_full[keep_mask], dtype=np.float64).copy()
+    actual_std_kept = np.asarray(actual_std_full[keep_mask], dtype=np.float64).copy()
+
+    track_labels = list(prep["track_labels"])
+    pred_tracks_full = np.zeros_like(actual_full, dtype=np.float64)
+
+    track_rows = []
+
+    for lbl in track_labels:
+        key = (int(lbl), int(target_tpc))
+        if key not in imageMaps:
+            continue
+
+        block = np.asarray(imageMaps[key], dtype=np.float64).copy()
+
+        t0_assigned = np.nan
+        info = assignment_info.get(key, {})
+        if "t0" in info and np.isfinite(info["t0"]):
+            t0_assigned = float(info["t0"])
+        else:
+            mask = (
+                (np.asarray(labels_global, dtype=np.int32) == int(lbl))
+                & (np.asarray(hitTPCid, dtype=np.int32) == int(target_tpc))
+                & np.isfinite(np.asarray(hit_timestamps, dtype=np.float64))
+            )
+            if np.any(mask):
+                t0_assigned = float(np.median(np.asarray(hit_timestamps, dtype=np.float64)[mask]))
+
+        if not np.isfinite(t0_assigned):
+            continue
+
+        shifted = _shift_block(block, int(round(t0_assigned)), baseline=0.0).astype(np.float64)
+        pred_tracks_full += shifted
+
+        track_rows.append(
+            {
+                "label": int(lbl),
+                "t0": int(round(t0_assigned)),
+                "energy_mev": float(np.sum(prep["E_tpc"][prep["labels_tpc_old"] == int(lbl)])),
+            }
+        )
+
+    pred_tracks_kept = np.asarray(pred_tracks_full[keep_mask], dtype=np.float64).copy()
+
+    actual_sum = np.sum(actual_kept, axis=0)
+    pred_tracks_sum = np.sum(pred_tracks_kept, axis=0)
+    missing_sum = np.clip(actual_sum - pred_tracks_sum, 0.0, None)
+
+    if actual_clip_for_display is not None:
+        actual_sum_display = np.clip(actual_sum, None, float(actual_clip_for_display))
+    else:
+        actual_sum_display = actual_sum.copy()
+
+    candidate_t0s = sorted(int(round(float(v))) for v in t0Candidates[target_tpc] if np.isfinite(v))
+    candidate_peak_ticks = [int(v + int(pulse_peak_tick)) for v in candidate_t0s]
+
+    candidate_rows = []
+    for t0, peak_tick in zip(candidate_t0s, candidate_peak_ticks):
+        lo = max(0, int(peak_tick) - int(deficit_half_window_ticks))
+        hi = min(actual_sum.shape[0], int(peak_tick) + int(deficit_half_window_ticks) + 1)
+
+        actual_win = float(np.sum(actual_sum[lo:hi]))
+        pred_win = float(np.sum(pred_tracks_sum[lo:hi]))
+        missing_win = float(np.sum(np.clip(actual_sum[lo:hi] - pred_tracks_sum[lo:hi], 0.0, None)))
+        frac_missing = missing_win / max(actual_win, 1e-9)
+
+        candidate_rows.append(
+            {
+                "t0": int(t0),
+                "peak_tick": int(peak_tick),
+                "window_lo": int(lo),
+                "window_hi": int(hi),
+                "actual_window_sum": float(actual_win),
+                "track_pred_window_sum": float(pred_win),
+                "missing_window_sum": float(missing_win),
+                "missing_fraction": float(frac_missing),
+            }
+        )
+
+    candidate_rows = sorted(
+        candidate_rows,
+        key=lambda r: (-r["missing_window_sum"], -r["missing_fraction"], r["t0"]),
+    )
+
+    return {
+        "target_tpc": int(target_tpc),
+        "pulse_peak_tick": int(pulse_peak_tick),
+        "deficit_half_window_ticks": int(deficit_half_window_ticks),
+        "track_rows": track_rows,
+        "track_labels_used": [int(r["label"]) for r in track_rows],
+        "actual_full": actual_full,
+        "actual_std_full": actual_std_full,
+        "pred_tracks_full": pred_tracks_full,
+        "veto_mask": veto_mask,
+        "keep_idx": keep_idx,
+        "veto_idx": veto_idx,
+        "actual_kept": actual_kept,
+        "actual_std_kept": actual_std_kept,
+        "pred_tracks_kept": pred_tracks_kept,
+        "actual_sum": actual_sum,
+        "actual_sum_display": actual_sum_display,
+        "pred_tracks_sum": pred_tracks_sum,
+        "missing_sum": missing_sum,
+        "candidate_t0s": candidate_t0s,
+        "candidate_peak_ticks": candidate_peak_ticks,
+        "candidate_rows": candidate_rows,
+    }
+
+
+def plot_tpc_tracks_only_light_debug(
+    dbg,
+    *,
+    title_prefix="Tracks-only light budget",
+    save_path=None,
+):
+    target_tpc = int(dbg["target_tpc"])
+
+    actual_sum = np.asarray(dbg["actual_sum_display"], dtype=np.float64)
+    pred_sum = np.asarray(dbg["pred_tracks_sum"], dtype=np.float64)
+    missing_sum = np.asarray(dbg["missing_sum"], dtype=np.float64)
+
+    actual_kept = np.asarray(dbg["actual_kept"], dtype=np.float64)
+    pred_kept = np.asarray(dbg["pred_tracks_kept"], dtype=np.float64)
+    residual_kept = np.clip(actual_kept - pred_kept, 0.0, None)
+
+    ticks = np.arange(actual_sum.shape[0], dtype=np.int32)
+
+    fig = make_subplots(
+        rows=4,
+        cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.04,
+        row_heights=[0.34, 0.22, 0.22, 0.22],
+        subplot_titles=(
+            "Summed light over unsaturated channels",
+            "Actual light (unsaturated channels only)",
+            "Tracks-only predicted light",
+            "Positive missing light = max(actual - tracks, 0)",
+        ),
+    )
+
+    fig.add_trace(
+        go.Scatter(x=ticks, y=actual_sum, mode="lines", line=dict(color="black", width=2), name="Actual sum"),
+        row=1,
+        col=1,
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=ticks,
+            y=pred_sum,
+            mode="lines",
+            line=dict(color="royalblue", width=2),
+            name="Tracks-only predicted sum",
+        ),
+        row=1,
+        col=1,
+    )
+    fig.add_trace(
+        go.Scatter(x=ticks, y=missing_sum, mode="lines", line=dict(color="firebrick", width=2), name="Missing sum"),
+        row=1,
+        col=1,
+    )
+
+    ymax = float(np.nanmax(actual_sum)) if actual_sum.size > 0 else 1.0
+    for row in dbg["candidate_rows"]:
+        tick = int(row["peak_tick"])
+        txt = (
+            f"t0={row['t0']}<br>"
+            f"missing={row['missing_window_sum']:.1f}<br>"
+            f"frac={100.0 * row['missing_fraction']:.1f}%"
+        )
+        fig.add_vline(x=tick, line_width=1.2, line_dash="dot", line_color="darkgreen", row=1, col=1)
+        fig.add_trace(
+            go.Scatter(
+                x=[tick],
+                y=[0.96 * ymax],
+                mode="markers+text",
+                marker=dict(size=5, color="darkgreen"),
+                text=[f"t0={row['t0']}"],
+                textposition="top center",
+                hovertext=[txt],
+                hoverinfo="text",
+                showlegend=False,
+            ),
+            row=1,
+            col=1,
+        )
+
+    fig.add_trace(
+        go.Heatmap(
+            z=actual_kept,
+            colorscale="Viridis",
+            colorbar=dict(title="ADC", len=0.18, y=0.69),
+            showscale=True,
+            name="Actual",
+        ),
+        row=2,
+        col=1,
+    )
+    fig.add_trace(
+        go.Heatmap(
+            z=pred_kept,
+            colorscale="Blues",
+            colorbar=dict(title="ADC", len=0.18, y=0.41),
+            showscale=True,
+            name="Tracks-only predicted",
+        ),
+        row=3,
+        col=1,
+    )
+    fig.add_trace(
+        go.Heatmap(
+            z=residual_kept,
+            colorscale="Reds",
+            colorbar=dict(title="ADC", len=0.18, y=0.13),
+            showscale=True,
+            name="Missing",
+        ),
+        row=4,
+        col=1,
+    )
+
+    fig.update_yaxes(title_text="Summed ADC", row=1, col=1)
+    fig.update_yaxes(title_text="Channel", row=2, col=1)
+    fig.update_yaxes(title_text="Channel", row=3, col=1)
+    fig.update_yaxes(title_text="Channel", row=4, col=1)
+    fig.update_xaxes(title_text="Waveform tick", row=4, col=1)
+
+    fig.update_layout(
+        title=(
+            f"{title_prefix} | TPC {target_tpc} | "
+            f"tracks used = {len(dbg['track_rows'])} | "
+            f"vetoed channels = {len(dbg['veto_idx'])}"
+        ),
+        margin=dict(l=0, r=0, b=0, t=60),
+        height=1200,
+        showlegend=True,
+    )
+
+    if save_path is not None:
+        fig.write_html(save_path)
+        print(f"Saved html: {save_path}")
+
+    fig.show()
+
+
+def print_tpc_tracks_only_light_summary(dbg, *, top_n=12):
+    print(f"TPC {dbg['target_tpc']}")
+    print(f"Pulse peak tick             : {dbg['pulse_peak_tick']}")
+    print(f"Deficit half window         : {dbg['deficit_half_window_ticks']} ticks")
+    print(f"Frozen tracks used          : {len(dbg['track_rows'])}")
+    print(f"Unsaturated channels kept   : {len(dbg['keep_idx'])}")
+    print(f"Vetoed saturated channels   : {len(dbg['veto_idx'])}")
+    print()
+
+    print("Track contributions")
+    print(f"{'label':>6} {'t0':>6} {'E[MeV]':>12}")
+    print("-" * 28)
+    for row in sorted(dbg["track_rows"], key=lambda r: (-r["energy_mev"], r["label"])):
+        print(f"{row['label']:6d} {row['t0']:6d} {row['energy_mev']:12.2f}")
+
+    print()
+    print("Candidate t0 missing-light ranking")
+    print(f"{'rank':>4} {'t0':>6} {'tick':>8} {'actual':>12} {'tracks':>12} {'missing':>12} {'miss%':>8}")
+    print("-" * 74)
+    for i, row in enumerate(dbg["candidate_rows"][: int(top_n)], start=1):
+        print(
+            f"{i:4d} {row['t0']:6d} {row['peak_tick']:8d} "
+            f"{row['actual_window_sum']:12.1f} {row['track_pred_window_sum']:12.1f} "
+            f"{row['missing_window_sum']:12.1f} {100.0 * row['missing_fraction']:8.1f}"
+        )
+
+
+def build_tpc_fake_single_t0_shower_debug(
+    prep,
+    *,
+    base_dbg=None,
+    shower_t0=375,
+    pulse_peak_tick=105,
+    peak_pick_half_window_ticks=3,
+    subtract_tracks_at_peak=True,
+    actual_clip_for_display=None,
+    deficit_half_window_ticks=18,
+):
+    target_tpc = int(prep["target_tpc"])
+    shower_t0 = int(shower_t0)
+    pulse_peak_tick = int(pulse_peak_tick)
+    peak_tick = int(shower_t0 + pulse_peak_tick)
+
+    if base_dbg is None:
+        base_dbg = build_tpc_tracks_only_light_debug(
+            prep,
+            pulse_peak_tick=pulse_peak_tick,
+            deficit_half_window_ticks=deficit_half_window_ticks,
+            actual_clip_for_display=actual_clip_for_display,
+        )
+
+    wvfm_tmpl = _ns("wvfm_tmpl", required=True)
+    t0Candidates = _ns("t0Candidates", required=True)
+
+    actual_full = np.asarray(base_dbg["actual_full"], dtype=np.float64).copy()
+    pred_tracks_full = np.asarray(base_dbg["pred_tracks_full"], dtype=np.float64).copy()
+    veto_mask = np.asarray(base_dbg["veto_mask"], dtype=bool)
+    keep_mask = ~veto_mask
+
+    tmpl = np.asarray(wvfm_tmpl, dtype=np.float64).copy()
+    tmpl = tmpl / max(float(np.max(tmpl)), 1e-12)
+
+    shifted_unit = _shift_block(tmpl[None, :], int(shower_t0), baseline=0.0)[0].astype(np.float64)
+
+    fake_shower_full = np.zeros_like(actual_full, dtype=np.float64)
+    channel_rows = []
+
+    for ch in np.flatnonzero(keep_mask).tolist():
+        ch = int(ch)
+
+        if subtract_tracks_at_peak:
+            source_wave = np.clip(actual_full[ch] - pred_tracks_full[ch], 0.0, None)
+        else:
+            source_wave = np.clip(actual_full[ch], 0.0, None)
+
+        lo = max(0, peak_tick - int(peak_pick_half_window_ticks))
+        hi = min(source_wave.shape[0], peak_tick + int(peak_pick_half_window_ticks) + 1)
+
+        if hi <= lo:
+            amp = 0.0
+            picked_tick = int(peak_tick)
+        else:
+            local = source_wave[lo:hi]
+            rel = int(np.argmax(local))
+            picked_tick = int(lo + rel)
+            amp = float(local[rel])
+
+        fake_shower_full[ch] = amp * shifted_unit
+
+        channel_rows.append(
+            {
+                "channel": int(ch),
+                "picked_tick": int(picked_tick),
+                "expected_peak_tick": int(peak_tick),
+                "amplitude_used": float(amp),
+            }
+        )
+
+    fake_shower_kept = np.asarray(fake_shower_full[keep_mask], dtype=np.float64).copy()
+    pred_total_full = pred_tracks_full + fake_shower_full
+    pred_total_kept = np.asarray(pred_total_full[keep_mask], dtype=np.float64).copy()
+
+    actual_kept = np.asarray(actual_full[keep_mask], dtype=np.float64).copy()
+    actual_std_kept = np.asarray(base_dbg["actual_std_kept"], dtype=np.float64).copy()
+
+    actual_sum = np.sum(actual_kept, axis=0)
+    pred_tracks_sum = np.sum(np.asarray(base_dbg["pred_tracks_kept"], dtype=np.float64), axis=0)
+    fake_shower_sum = np.sum(fake_shower_kept, axis=0)
+    pred_total_sum = np.sum(pred_total_kept, axis=0)
+
+    missing_before = np.clip(actual_sum - pred_tracks_sum, 0.0, None)
+    missing_after = np.clip(actual_sum - pred_total_sum, 0.0, None)
+
+    if actual_clip_for_display is not None:
+        actual_sum_display = np.clip(actual_sum, None, float(actual_clip_for_display))
+    else:
+        actual_sum_display = actual_sum.copy()
+
+    candidate_t0s = sorted(int(round(float(v))) for v in t0Candidates[target_tpc] if np.isfinite(v))
+    candidate_rows = []
+
+    for cand_t0 in candidate_t0s:
+        cand_peak = int(cand_t0 + pulse_peak_tick)
+        if 0 <= cand_peak < actual_sum.shape[0]:
+            actual_at_tick = float(actual_sum[cand_peak])
+            tracks_at_tick = float(pred_tracks_sum[cand_peak])
+            fake_at_tick = float(fake_shower_sum[cand_peak])
+            total_at_tick = float(pred_total_sum[cand_peak])
+            missing_before_at_tick = float(max(actual_at_tick - tracks_at_tick, 0.0))
+            missing_after_at_tick = float(max(actual_at_tick - total_at_tick, 0.0))
+        else:
+            actual_at_tick = np.nan
+            tracks_at_tick = np.nan
+            fake_at_tick = np.nan
+            total_at_tick = np.nan
+            missing_before_at_tick = np.nan
+            missing_after_at_tick = np.nan
+
+        lo = max(0, cand_peak - int(deficit_half_window_ticks))
+        hi = min(actual_sum.shape[0], cand_peak + int(deficit_half_window_ticks) + 1)
+
+        actual_win = float(np.sum(actual_sum[lo:hi]))
+        tracks_win = float(np.sum(np.clip(pred_tracks_sum[lo:hi], 0.0, None)))
+        fake_win = float(np.sum(np.clip(fake_shower_sum[lo:hi], 0.0, None)))
+        total_win = float(np.sum(np.clip(pred_total_sum[lo:hi], 0.0, None)))
+
+        missing_before_win = float(np.sum(np.clip(actual_sum[lo:hi] - pred_tracks_sum[lo:hi], 0.0, None)))
+        missing_after_win = float(np.sum(np.clip(actual_sum[lo:hi] - pred_total_sum[lo:hi], 0.0, None)))
+
+        frac_before = missing_before_win / max(actual_win, 1e-9)
+        frac_after = missing_after_win / max(actual_win, 1e-9)
+
+        candidate_rows.append(
+            {
+                "t0": int(cand_t0),
+                "peak_tick": int(cand_peak),
+                "actual_at_tick": float(actual_at_tick),
+                "track_pred_at_tick": float(tracks_at_tick),
+                "fake_shower_at_tick": float(fake_at_tick),
+                "total_pred_at_tick": float(total_at_tick),
+                "missing_before_at_tick": float(missing_before_at_tick),
+                "missing_after_at_tick": float(missing_after_at_tick),
+                "actual_window_sum": float(actual_win),
+                "track_pred_window_sum": float(tracks_win),
+                "fake_shower_window_sum": float(fake_win),
+                "total_pred_window_sum": float(total_win),
+                "missing_before_sum": float(missing_before_win),
+                "missing_after_sum": float(missing_after_win),
+                "missing_before_fraction": float(frac_before),
+                "missing_after_fraction": float(frac_after),
+            }
+        )
+
+    candidate_rows = sorted(
+        candidate_rows,
+        key=lambda r: (-r["missing_after_sum"], -r["missing_after_fraction"], r["t0"]),
+    )
+
+    return {
+        "target_tpc": int(target_tpc),
+        "shower_t0": int(shower_t0),
+        "pulse_peak_tick": int(pulse_peak_tick),
+        "peak_tick": int(peak_tick),
+        "peak_pick_half_window_ticks": int(peak_pick_half_window_ticks),
+        "subtract_tracks_at_peak": bool(subtract_tracks_at_peak),
+        "veto_mask": veto_mask,
+        "keep_mask": keep_mask,
+        "actual_full": actual_full,
+        "actual_kept": actual_kept,
+        "actual_std_kept": actual_std_kept,
+        "pred_tracks_full": pred_tracks_full,
+        "pred_tracks_kept": np.asarray(base_dbg["pred_tracks_kept"], dtype=np.float64).copy(),
+        "fake_shower_full": fake_shower_full,
+        "fake_shower_kept": fake_shower_kept,
+        "pred_total_full": pred_total_full,
+        "pred_total_kept": pred_total_kept,
+        "actual_sum": actual_sum,
+        "actual_sum_display": actual_sum_display,
+        "pred_tracks_sum": pred_tracks_sum,
+        "fake_shower_sum": fake_shower_sum,
+        "pred_total_sum": pred_total_sum,
+        "missing_before": missing_before,
+        "missing_after": missing_after,
+        "peak_miss_curve": missing_after,
+        "candidate_rows": candidate_rows,
+        "channel_rows": channel_rows,
+        "base_dbg": base_dbg,
+    }
+
+
+def print_tpc_fake_single_t0_shower_summary(dbg, *, top_n=12):
+    print(f"TPC {dbg['target_tpc']}")
+    print(f"Fake shower t0              : {dbg['shower_t0']}")
+    print(f"Fake shower peak tick       : {dbg['peak_tick']}")
+    print(f"Peak pick half window       : {dbg['peak_pick_half_window_ticks']} ticks")
+    print(f"Subtract tracks at peak     : {dbg['subtract_tracks_at_peak']}")
+    print(f"Unsaturated channels kept   : {int(np.count_nonzero(dbg['keep_mask']))}")
+    print()
+
+    print("Candidate t0 missing-light ranking after fake shower")
+    print("  peak_* columns are the exact values at the green vertical line")
+    print("  peak_miss is also the dashed red per-tick miss curve at that tick")
+    print("  win_* columns are the integrated ranking metric over the window")
+    print(
+        f"{'rank':>4} {'t0':>6} {'tick':>8} "
+        f"{'peak_act':>10} {'peak_tot':>10} {'peak_miss':>10} "
+        f"{'win_miss':>12} {'win%':>8}"
+    )
+    print("-" * 76)
+    for i, row in enumerate(dbg["candidate_rows"][: int(top_n)], start=1):
+        print(
+            f"{i:4d} {row['t0']:6d} {row['peak_tick']:8d} "
+            f"{row['actual_at_tick']:10.1f} {row['total_pred_at_tick']:10.1f} "
+            f"{row['missing_after_at_tick']:10.1f} {row['missing_after_sum']:12.1f} "
+            f"{100.0 * row['missing_after_fraction']:8.1f}"
+        )
+
+
+def plot_tpc_fake_single_t0_shower_debug(
+    dbg,
+    *,
+    title_prefix="Tracks + fake single-t0 shower",
+    save_path=None,
+):
+    actual_sum = np.asarray(dbg["actual_sum_display"], dtype=np.float64)
+    tracks_sum = np.asarray(dbg["pred_tracks_sum"], dtype=np.float64)
+    fake_sum = np.asarray(dbg["fake_shower_sum"], dtype=np.float64)
+    total_sum = np.asarray(dbg["pred_total_sum"], dtype=np.float64)
+    missing_after = np.asarray(dbg["missing_after"], dtype=np.float64)
+
+    actual_kept = np.asarray(dbg["actual_kept"], dtype=np.float64)
+    tracks_kept = np.asarray(dbg["pred_tracks_kept"], dtype=np.float64)
+    fake_kept = np.asarray(dbg["fake_shower_kept"], dtype=np.float64)
+    total_kept = np.asarray(dbg["pred_total_kept"], dtype=np.float64)
+
+    ticks = np.arange(actual_sum.shape[0], dtype=np.int32)
+
+    fig = make_subplots(
+        rows=5,
+        cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.035,
+        row_heights=[0.30, 0.18, 0.17, 0.17, 0.18],
+        subplot_titles=(
+            "Summed light over unsaturated channels",
+            "Actual light (unsaturated channels only)",
+            "Tracks-only predicted light",
+            f"Fake shower light at t0 = {dbg['shower_t0']}",
+            "Total predicted = tracks + fake shower",
+        ),
+    )
+
+    fig.add_trace(
+        go.Scatter(x=ticks, y=actual_sum, mode="lines", line=dict(color="black", width=2), name="Actual sum"),
+        row=1,
+        col=1,
+    )
+    fig.add_trace(
+        go.Scatter(x=ticks, y=tracks_sum, mode="lines", line=dict(color="royalblue", width=2), name="Tracks-only sum"),
+        row=1,
+        col=1,
+    )
+    fig.add_trace(
+        go.Scatter(x=ticks, y=fake_sum, mode="lines", line=dict(color="darkorange", width=2), name="Fake shower sum"),
+        row=1,
+        col=1,
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=ticks,
+            y=total_sum,
+            mode="lines",
+            line=dict(color="seagreen", width=2),
+            name="Tracks + fake shower",
+        ),
+        row=1,
+        col=1,
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=ticks,
+            y=missing_after,
+            mode="lines",
+            line=dict(color="firebrick", width=2, dash="dash"),
+            name="Peak miss curve (per tick)",
+        ),
+        row=1,
+        col=1,
+    )
+
+    ymax = float(np.nanmax(actual_sum)) if actual_sum.size > 0 else 1.0
+
+    rows_for_plot = [r for r in dbg["candidate_rows"] if int(r["t0"]) != 0]
+    rows_for_plot = sorted(rows_for_plot, key=lambda r: int(r["peak_tick"]))
+
+    y_levels = [0.97, 0.90, 0.83, 0.76]
+    x_shifts = [0, -18, 18, -28]
+
+    prev_tick = None
+    level_idx = 0
+
+    for row in rows_for_plot:
+        tick = int(row["peak_tick"])
+
+        if prev_tick is None or (tick - prev_tick) >= 32:
+            level_idx = 0
+        else:
+            level_idx = (level_idx + 1) % len(y_levels)
+
+        y_text = y_levels[level_idx] * ymax
+        x_shift = x_shifts[level_idx]
+
+        fig.add_vline(x=tick, line_width=1.0, line_dash="dot", line_color="darkgreen", row=1, col=1)
+
+        fig.add_trace(
+            go.Scatter(
+                x=[tick],
+                y=[0.985 * ymax],
+                mode="markers",
+                marker=dict(size=5, color="darkgreen"),
+                hovertext=[
+                    (
+                        f"t0={row['t0']}<br>"
+                        f"peak_miss={row['missing_after_at_tick']:.1f}<br>"
+                        f"win_miss={row['missing_after_sum']:.1f}<br>"
+                        f"win%={100.0 * row['missing_after_fraction']:.1f}%"
+                    )
+                ],
+                hoverinfo="text",
+                showlegend=False,
+            ),
+            row=1,
+            col=1,
+        )
+
+        fig.add_annotation(
+            x=tick,
+            y=y_text,
+            text=f"t0={row['t0']}",
+            showarrow=False,
+            xshift=x_shift,
+            bgcolor="rgba(255,255,255,0.75)",
+            bordercolor="darkgreen",
+            borderwidth=1,
+            font=dict(size=11, color="darkgreen"),
+            xref="x1",
+            yref="y1",
+        )
+
+        prev_tick = tick
+
+    fig.add_trace(go.Heatmap(z=actual_kept, colorscale="Viridis", showscale=False, name="Actual"), row=2, col=1)
+    fig.add_trace(go.Heatmap(z=tracks_kept, colorscale="Blues", showscale=False, name="Tracks-only"), row=3, col=1)
+    fig.add_trace(go.Heatmap(z=fake_kept, colorscale="YlOrBr", showscale=False, name="Fake shower"), row=4, col=1)
+    fig.add_trace(go.Heatmap(z=total_kept, colorscale="Greens", showscale=False, name="Tracks+fake"), row=5, col=1)
+
+    fig.update_yaxes(title_text="Summed ADC", row=1, col=1)
+    fig.update_yaxes(title_text="Channel", row=2, col=1)
+    fig.update_yaxes(title_text="Channel", row=3, col=1)
+    fig.update_yaxes(title_text="Channel", row=4, col=1)
+    fig.update_yaxes(title_text="Channel", row=5, col=1)
+    fig.update_xaxes(title_text="Waveform tick", row=5, col=1)
+
+    fig.update_layout(
+        title=(
+            f"{title_prefix} | TPC {dbg['target_tpc']} | "
+            f"fake shower t0 = {dbg['shower_t0']} | "
+            f"unsaturated channels = {int(np.count_nonzero(dbg['keep_mask']))}"
+        ),
+        margin=dict(l=0, r=0, b=0, t=60),
+        height=1350,
+        showlegend=True,
+    )
+
+    if save_path is not None:
+        fig.write_html(save_path)
+        print(f"Saved html: {save_path}")
+
+    fig.show()
+
+
+def detect_shower_t0_from_global_max(tracks_dbg, *, snap_to_candidate=True):
+    actual_sum = np.asarray(tracks_dbg["actual_sum"], dtype=np.float64)
+    pulse_peak_tick = int(tracks_dbg["pulse_peak_tick"])
+    peak_tick = int(np.argmax(actual_sum))
+    raw_t0 = int(peak_tick - pulse_peak_tick)
+
+    if (not snap_to_candidate) or len(tracks_dbg.get("candidate_t0s", [])) == 0:
+        return {
+            "peak_tick": peak_tick,
+            "raw_t0": raw_t0,
+            "t0": raw_t0,
+        }
+
+    candidates = [int(v) for v in tracks_dbg["candidate_t0s"]]
+    snapped_t0 = min(candidates, key=lambda v: (abs(v - raw_t0), v))
+    return {
+        "peak_tick": peak_tick,
+        "raw_t0": raw_t0,
+        "t0": int(snapped_t0),
+    }
+
+
+def _penalized_error_metric(model, actual, error_block, *, overflow_weight=3.0):
+    model = np.asarray(model, dtype=np.float32)
+    actual = np.asarray(actual, dtype=np.float32)
+    err = np.maximum(np.asarray(error_block, dtype=np.float32), 1e-6)
+
+    resid2 = (model - actual) ** 2 / err
+    weights = np.where(model > actual, float(overflow_weight), 1.0).astype(np.float32)
+    return float(np.mean(resid2 * weights))
+
+
+def _current_missing_candidate_rows(
+    fake_dbg,
+    current_model_kept,
+    *,
+    min_peak_missing_fraction=0.50,
+    exclude_t0_zero=True,
+):
+    actual_sum = np.sum(np.asarray(fake_dbg["actual_kept"], dtype=np.float32), axis=0)
+    model_sum = np.sum(np.asarray(current_model_kept, dtype=np.float32), axis=0)
+
+    if "base_dbg" in fake_dbg:
+        half_window = int(fake_dbg["base_dbg"]["deficit_half_window_ticks"])
+    else:
+        half_window = 18
+
+    rows = []
+    for base_row in fake_dbg["candidate_rows"]:
+        t0 = int(base_row["t0"])
+        if exclude_t0_zero and t0 == 0:
+            continue
+
+        tick = int(base_row["peak_tick"])
+        if tick < 0 or tick >= actual_sum.shape[0]:
+            continue
+
+        peak_actual = float(actual_sum[tick])
+        peak_total = float(model_sum[tick])
+        peak_miss = float(max(peak_actual - peak_total, 0.0))
+        peak_frac = float(peak_miss / max(peak_actual, 1e-9))
+
+        lo = max(0, tick - half_window)
+        hi = min(actual_sum.shape[0], tick + half_window + 1)
+        win_miss = float(np.sum(np.clip(actual_sum[lo:hi] - model_sum[lo:hi], 0.0, None)))
+
+        rows.append(
+            {
+                "t0": int(t0),
+                "peak_tick": int(tick),
+                "peak_actual": float(peak_actual),
+                "peak_total": float(peak_total),
+                "peak_missing": float(peak_miss),
+                "peak_missing_fraction": float(peak_frac),
+                "window_missing": float(win_miss),
+                "window_lo": int(lo),
+                "window_hi": int(hi),
+            }
+        )
+
+    rows = [r for r in rows if r["peak_missing_fraction"] > float(min_peak_missing_fraction)]
+    rows = sorted(rows, key=lambda r: (-r["peak_missing_fraction"], -r["peak_missing"], r["t0"]))
+    return rows
+
+
+def _build_focus_mask(n_ticks, candidate_rows, *, half_window=18, pad_ticks=12):
+    mask = np.zeros(int(n_ticks), dtype=bool)
+    for row in candidate_rows:
+        tick = int(row["peak_tick"])
+        lo = max(0, tick - int(half_window) - int(pad_ticks))
+        hi = min(int(n_ticks), tick + int(half_window) + int(pad_ticks) + 1)
+        mask[lo:hi] = True
+    if not np.any(mask):
+        mask[:] = True
+    return mask
+
+
+def _build_reclustered_cluster_templates(
+    prep,
+    cluster_result,
+    fake_dbg,
+    *,
+    min_cluster_energy_mev=1.0,
+):
+    """
+    Build a light template for each reclustered cluster by summing original-label
+    imageMaps weighted by the energy fraction of that original label captured by
+    the reclustered cluster.
+    """
+    image_maps = _ns("imageMaps", required=True)
+
+    target_tpc = int(prep["target_tpc"])
+    keep_mask = np.asarray(fake_dbg["keep_mask"], dtype=bool)
+
+    local_cluster_labels = np.asarray(cluster_result["nontrack_labels"], dtype=np.int32)
+    old_labels = np.asarray(prep["labels_nontrack_old"], dtype=np.int32)
+    energies = np.asarray(prep["E_nontrack"], dtype=np.float32)
+
+    unique_clusters = sorted(int(v) for v in np.unique(local_cluster_labels) if int(v) >= 0)
+    unique_old_labels = sorted(int(v) for v in np.unique(old_labels) if int(v) >= 0)
+
+    old_label_total_energy = {}
+    for lbl in unique_old_labels:
+        m = old_labels == int(lbl)
+        old_label_total_energy[int(lbl)] = float(np.sum(energies[m]))
+
+    templates = {}
+    cluster_rows = []
+
+    for cid in unique_clusters:
+        cmask = local_cluster_labels == int(cid)
+        cluster_energy = float(np.sum(energies[cmask]))
+        if cluster_energy < float(min_cluster_energy_mev):
+            continue
+
+        wave = np.zeros_like(np.asarray(fake_dbg["actual_kept"], dtype=np.float32), dtype=np.float32)
+        contributors = []
+
+        local_old_labels = sorted(int(v) for v in np.unique(old_labels[cmask]) if int(v) >= 0)
+        for lbl in local_old_labels:
+            key = (int(lbl), int(target_tpc))
+            if key not in image_maps:
+                continue
+
+            take_energy = float(np.sum(energies[cmask & (old_labels == int(lbl))]))
+            denom = max(float(old_label_total_energy.get(int(lbl), 0.0)), 1e-9)
+            frac = float(take_energy / denom)
+            if frac <= 0.0:
+                continue
+
+            wave += frac * np.asarray(image_maps[key], dtype=np.float32)[keep_mask]
+            contributors.append(
+                {
+                    "old_label": int(lbl),
+                    "energy_mev": float(take_energy),
+                    "fraction_of_old_label": float(frac),
+                }
+            )
+
+        peak_sum = float(np.max(np.sum(wave, axis=0))) if wave.size > 0 else 0.0
+        if peak_sum <= 0.0:
+            continue
+
+        contributors = sorted(contributors, key=lambda r: (-r["energy_mev"], r["old_label"]))
+
+        templates[int(cid)] = np.asarray(wave, dtype=np.float32)
+        cluster_rows.append(
+            {
+                "cluster_id": int(cid),
+                "energy_mev": float(cluster_energy),
+                "n_hits": int(np.count_nonzero(cmask)),
+                "peak_sum": float(peak_sum),
+                "contributors": contributors,
+            }
+        )
+
+    cluster_rows = sorted(cluster_rows, key=lambda r: (-r["energy_mev"], r["cluster_id"]))
+    meta = {int(r["cluster_id"]): r for r in cluster_rows}
+    return templates, meta
+
+
+def _plot_fill_hole_assignment_html(
+    prep,
+    cluster_result,
+    fake_dbg,
+    accepted_rows,
+    base_model_kept,
+    final_model_kept,
+    initial_candidates,
+    final_candidates,
+    *,
+    save_path,
+    title_prefix="Fill-hole assignment",
+):
+    actual_kept = np.asarray(fake_dbg["actual_kept"], dtype=np.float32)
+    actual_sum = np.sum(actual_kept, axis=0)
+
+    base_sum = np.sum(np.asarray(base_model_kept, dtype=np.float32), axis=0)
+    final_sum = np.sum(np.asarray(final_model_kept, dtype=np.float32), axis=0)
+    final_missing = np.clip(actual_sum - final_sum, 0.0, None)
+
+    ticks = np.arange(actual_sum.shape[0], dtype=np.int32)
+
+    fig = make_subplots(
+        rows=2,
+        cols=1,
+        specs=[[{"type": "xy"}], [{"type": "scene"}]],
+        vertical_spacing=0.06,
+        row_heights=[0.34, 0.66],
+        subplot_titles=(
+            "Summed light before/after fill-hole step",
+            "Carved-out reclustered clusters assigned to candidate t0s",
+        ),
+    )
+
+    fig.add_trace(
+        go.Scatter(x=ticks, y=actual_sum, mode="lines", line=dict(color="black", width=2), name="Actual sum"),
+        row=1,
+        col=1,
+    )
+    fig.add_trace(
+        go.Scatter(x=ticks, y=base_sum, mode="lines", line=dict(color="royalblue", width=2), name="Before fill-hole"),
+        row=1,
+        col=1,
+    )
+    fig.add_trace(
+        go.Scatter(x=ticks, y=final_sum, mode="lines", line=dict(color="seagreen", width=2), name="After fill-hole"),
+        row=1,
+        col=1,
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=ticks,
+            y=final_missing,
+            mode="lines",
+            line=dict(color="firebrick", width=2, dash="dash"),
+            name="Peak miss curve (after fill-hole)",
+        ),
+        row=1,
+        col=1,
+    )
+
+    ymax = float(np.nanmax(actual_sum)) if actual_sum.size > 0 else 1.0
+    shown_t0s = sorted(set(int(r["t0"]) for r in accepted_rows))
+    for i, t0 in enumerate(shown_t0s):
+        tick = int(t0 + int(fake_dbg["pulse_peak_tick"]))
+        fig.add_vline(x=tick, line_width=1.0, line_dash="dot", line_color="darkgreen", row=1, col=1)
+        fig.add_trace(
+            go.Scatter(
+                x=[tick],
+                y=[(0.96 - 0.05 * (i % 3)) * ymax],
+                mode="markers+text",
+                marker=dict(size=5, color="darkgreen"),
+                text=[f"t0={t0}"],
+                textposition="top center",
+                showlegend=False,
+                hoverinfo="skip",
+            ),
+            row=1,
+            col=1,
+        )
+
+    x_tpc = np.asarray(prep["x_tpc"], dtype=np.float32)
+    y_tpc = np.asarray(prep["y_tpc"], dtype=np.float32)
+    z_tpc = np.asarray(prep["z_tpc"], dtype=np.float32)
+    track_mask_tpc = np.asarray(prep["track_mask_tpc"], dtype=bool)
+    nontrack_points = np.asarray(prep["points_nontrack"], dtype=np.float32)
+    nontrack_cluster_labels = np.asarray(cluster_result["nontrack_labels"], dtype=np.int32)
+
+    if np.any(track_mask_tpc):
+        fig.add_trace(
+            go.Scatter3d(
+                x=z_tpc[track_mask_tpc],
+                y=y_tpc[track_mask_tpc],
+                z=x_tpc[track_mask_tpc],
+                mode="markers",
+                marker=dict(size=2.2, color="lightgray", opacity=0.16),
+                name=f"Frozen tracks ({int(np.count_nonzero(track_mask_tpc))} hits)",
+            ),
+            row=2,
+            col=1,
+        )
+
+    accepted_by_cluster = {int(r["cluster_id"]): r for r in accepted_rows}
+    assigned_nontrack_mask = np.isin(
+        nontrack_cluster_labels,
+        np.asarray(sorted(accepted_by_cluster.keys()), dtype=np.int32),
+    )
+    unassigned_nontrack_mask = ~assigned_nontrack_mask
+
+    if np.any(unassigned_nontrack_mask):
+        pts = nontrack_points[unassigned_nontrack_mask]
+        fig.add_trace(
+            go.Scatter3d(
+                x=pts[:, 2],
+                y=pts[:, 1],
+                z=pts[:, 0],
+                mode="markers",
+                marker=dict(size=2.4, color="dimgray", opacity=0.25),
+                name=f"Not carved out ({int(np.count_nonzero(unassigned_nontrack_mask))} hits)",
+            ),
+            row=2,
+            col=1,
+        )
+
+    t0_color = {}
+    for i, t0 in enumerate(shown_t0s):
+        color_hex, _ = VALID_GROUP_COLORS[i % len(VALID_GROUP_COLORS)]
+        t0_color[int(t0)] = color_hex
+
+    for row in accepted_rows:
+        cid = int(row["cluster_id"])
+        t0 = int(row["t0"])
+        cmask = nontrack_cluster_labels == int(cid)
+        pts = nontrack_points[cmask]
+        hover = (
+            f"cluster={cid}<br>"
+            f"t0={t0}<br>"
+            f"E={row['energy_mev']:.2f} MeV<br>"
+            f"n_hits={row['n_hits']}<br>"
+            f"delta_loss={row['delta_loss']:.3f}<br>"
+            f"peak_miss_before={row['target_peak_missing_before']:.1f}<br>"
+            f"cluster_peak_at_t0={row['cluster_peak_at_t0']:.1f}<br>"
+            f"top old labels={row['top_old_labels_text']}"
+        )
+        fig.add_trace(
+            go.Scatter3d(
+                x=pts[:, 2],
+                y=pts[:, 1],
+                z=pts[:, 0],
+                mode="markers",
+                marker=dict(size=3.4, color=t0_color[int(t0)], opacity=0.92),
+                text=[hover] * pts.shape[0],
+                hoverinfo="text+x+y+z",
+                name=f"t0={t0} | cluster {cid} | E={row['energy_mev']:.1f} MeV",
+            ),
+            row=2,
+            col=1,
+        )
+
+    fig.update_yaxes(title_text="Summed ADC", row=1, col=1)
+    fig.update_xaxes(title_text="Waveform tick", row=1, col=1)
+    fig.update_scenes(xaxis_title="z", yaxis_title="y", zaxis_title="x", row=2, col=1)
+
+    fig.update_layout(
+        title=(
+            f"{title_prefix} | TPC {prep['target_tpc']} | "
+            f"accepted={len(accepted_rows)} | "
+            f"initial holes={','.join(str(r['t0']) for r in initial_candidates[:6]) if initial_candidates else 'none'} | "
+            f"final holes={','.join(str(r['t0']) for r in final_candidates[:6]) if final_candidates else 'none'}"
+        ),
+        margin=dict(l=0, r=0, b=0, t=60),
+        height=1250,
+        showlegend=True,
+    )
+
+    if save_path is not None:
+        fig.write_html(save_path)
+        print(f"Saved html: {save_path}")
+
+    fig.show()
+
+
+def run_greedy_fill_hole_assignment_on_reclustered(
+    prep,
+    cluster_result,
+    fake_dbg,
+    *,
+    namespace=None,
+    min_peak_missing_fraction=0.50,
+    min_cluster_energy_mev=1.0,
+    max_assignments=12,
+    overflow_weight=3.0,
+    min_absolute_improvement=10.0,
+    min_relative_improvement=1.0e-4,
+    peak_fill_limit_factor=1.6,
+    focus_pad_ticks=12,
+    exclude_t0_zero=True,
+    save_path=None,
+    verbose=True,
+):
+    if namespace is not None:
+        bind_notebook_namespace(namespace)
+
+    target_tpc = int(prep["target_tpc"])
+    actual_kept = np.asarray(fake_dbg["actual_kept"], dtype=np.float32)
+    error_kept = np.maximum(np.asarray(fake_dbg["actual_std_kept"], dtype=np.float32), 1e-6)
+
+    base_model_kept = np.asarray(fake_dbg["pred_total_kept"], dtype=np.float32).copy()
+    current_model_kept = base_model_kept.copy()
+
+    templates, cluster_meta = _build_reclustered_cluster_templates(
+        prep,
+        cluster_result,
+        fake_dbg,
+        min_cluster_energy_mev=min_cluster_energy_mev,
+    )
+
+    remaining_clusters = set(int(cid) for cid in templates.keys())
+    accepted_rows = []
+    history = []
+
+    initial_candidates = _current_missing_candidate_rows(
+        fake_dbg,
+        current_model_kept,
+        min_peak_missing_fraction=min_peak_missing_fraction,
+        exclude_t0_zero=exclude_t0_zero,
+    )
+
+    if verbose:
+        print(f"TPC {target_tpc} fill-hole assignment")
+        print(f"  candidate holes initially : {[r['t0'] for r in initial_candidates]}")
+        print(f"  candidate clusters        : {len(remaining_clusters)}")
+
+    half_window = int(fake_dbg["base_dbg"]["deficit_half_window_ticks"]) if "base_dbg" in fake_dbg else 18
+
+    for step in range(int(max_assignments)):
+        active_candidates = _current_missing_candidate_rows(
+            fake_dbg,
+            current_model_kept,
+            min_peak_missing_fraction=min_peak_missing_fraction,
+            exclude_t0_zero=exclude_t0_zero,
+        )
+        history.append({"step": int(step), "active_candidates": active_candidates})
+
+        if len(active_candidates) == 0:
+            if verbose:
+                print(f"  step {step}: no active candidate t0s remain")
+            break
+
+        focus_mask = _build_focus_mask(
+            current_model_kept.shape[1],
+            active_candidates,
+            half_window=half_window,
+            pad_ticks=focus_pad_ticks,
+        )
+
+        current_loss = _penalized_error_metric(
+            current_model_kept[:, focus_mask],
+            actual_kept[:, focus_mask],
+            error_kept[:, focus_mask],
+            overflow_weight=overflow_weight,
+        )
+
+        best = None
+
+        ordered_clusters = sorted(
+            list(remaining_clusters),
+            key=lambda cid: (float(cluster_meta[cid]["energy_mev"]), -int(cid)),
+            reverse=True,
+        )
+
+        for cid in ordered_clusters:
+            wave = templates[int(cid)]
+            meta = cluster_meta[int(cid)]
+
+            for cand in active_candidates:
+                t0 = int(cand["t0"])
+                tick = int(cand["peak_tick"])
+
+                shifted = _shift_block(wave[None, :, :], int(t0), baseline=0.0)[0].astype(np.float32)
+                cluster_peak_at_t0 = float(np.sum(shifted[:, tick])) if 0 <= tick < shifted.shape[1] else 0.0
+
+                if cand["peak_missing"] > 0.0:
+                    if cluster_peak_at_t0 > float(peak_fill_limit_factor) * float(cand["peak_missing"]):
+                        continue
+
+                candidate_model = current_model_kept + shifted
+                candidate_loss = _penalized_error_metric(
+                    candidate_model[:, focus_mask],
+                    actual_kept[:, focus_mask],
+                    error_kept[:, focus_mask],
+                    overflow_weight=overflow_weight,
+                )
+                delta_loss = float(candidate_loss - current_loss)
+
+                if (best is None) or (delta_loss < best["delta_loss"]):
+                    top_old_labels_text = ", ".join(
+                        f"{r['old_label']} ({r['fraction_of_old_label']:.2f})" for r in meta["contributors"][:4]
+                    )
+                    best = {
+                        "step": int(step + 1),
+                        "cluster_id": int(cid),
+                        "t0": int(t0),
+                        "energy_mev": float(meta["energy_mev"]),
+                        "n_hits": int(meta["n_hits"]),
+                        "delta_loss": float(delta_loss),
+                        "loss_before": float(current_loss),
+                        "loss_after": float(candidate_loss),
+                        "target_peak_missing_before": float(cand["peak_missing"]),
+                        "target_peak_fraction_before": float(cand["peak_missing_fraction"]),
+                        "cluster_peak_at_t0": float(cluster_peak_at_t0),
+                        "candidate_model": candidate_model,
+                        "top_old_labels_text": top_old_labels_text,
+                    }
+
+        if best is None:
+            if verbose:
+                print(f"  step {step}: no viable cluster/t0 pair survived")
+            break
+
+        gate = max(
+            float(min_absolute_improvement),
+            float(min_relative_improvement) * max(abs(float(current_loss)), 1.0),
+        )
+
+        if best["delta_loss"] >= -gate:
+            if verbose:
+                print(
+                    f"  step {step}: stopping because best delta_loss={best['delta_loss']:.3f} "
+                    f"is not better than gate {-gate:.3f}"
+                )
+            break
+
+        current_model_kept = np.asarray(best["candidate_model"], dtype=np.float32)
+        remaining_clusters.remove(int(best["cluster_id"]))
+        best.pop("candidate_model", None)
+        accepted_rows.append(best)
+
+        if verbose:
+            print(
+                f"  step {best['step']:2d}: cluster {best['cluster_id']:4d} -> t0={best['t0']:3d} | "
+                f"E={best['energy_mev']:.1f} MeV | delta_loss={best['delta_loss']:.3f}"
+            )
+
+    final_candidates = _current_missing_candidate_rows(
+        fake_dbg,
+        current_model_kept,
+        min_peak_missing_fraction=min_peak_missing_fraction,
+        exclude_t0_zero=exclude_t0_zero,
+    )
+
+    if verbose:
+        print()
+        print("Accepted assignments")
+        print(f"{'step':>4} {'cluster':>8} {'E[MeV]':>10} {'t0':>6} {'dLoss':>12} {'peakMiss':>12} {'clusterPeak':>12}")
+        print("-" * 72)
+        for row in accepted_rows:
+            print(
+                f"{row['step']:4d} {row['cluster_id']:8d} {row['energy_mev']:10.2f} {row['t0']:6d} "
+                f"{row['delta_loss']:12.3f} {row['target_peak_missing_before']:12.1f} "
+                f"{row['cluster_peak_at_t0']:12.1f}"
+            )
+
+        print()
+        print(f"Remaining active holes (> {100.0 * float(min_peak_missing_fraction):.1f}% peak miss): {[r['t0'] for r in final_candidates]}")
+
+    if save_path is None:
+        save_path = f"TPC{target_tpc}_fill_hole_assignments.html"
+
+    _plot_fill_hole_assignment_html(
+        prep,
+        cluster_result,
+        fake_dbg,
+        accepted_rows,
+        base_model_kept,
+        current_model_kept,
+        initial_candidates,
+        final_candidates,
+        save_path=save_path,
+    )
+
+    return {
+        "target_tpc": int(target_tpc),
+        "accepted_rows": accepted_rows,
+        "history": history,
+        "initial_candidates": initial_candidates,
+        "final_candidates": final_candidates,
+        "base_model_kept": base_model_kept,
+        "final_model_kept": current_model_kept,
+        "cluster_templates": templates,
+        "cluster_meta": cluster_meta,
+        "save_path": str(save_path),
+    }
+
+
+def _plot_shower_cluster_promotion_html(
+    prep,
+    cluster_result,
+    fake_dbg,
+    fill_result,
+    accepted_rows,
+    base_model_kept,
+    final_model_kept,
+    fake_remaining_kept,
+    promoted_shower_kept,
+    *,
+    save_path,
+    title_prefix="Shower-t0 promotion",
+):
+    actual_kept = np.asarray(fake_dbg["actual_kept"], dtype=np.float32)
+    actual_sum = np.sum(actual_kept, axis=0)
+    base_sum = np.sum(np.asarray(base_model_kept, dtype=np.float32), axis=0)
+    final_sum = np.sum(np.asarray(final_model_kept, dtype=np.float32), axis=0)
+    fake_orig_sum = np.sum(np.asarray(fake_dbg["fake_shower_kept"], dtype=np.float32), axis=0)
+    fake_remaining_sum = np.sum(np.asarray(fake_remaining_kept, dtype=np.float32), axis=0)
+    promoted_sum = np.sum(np.asarray(promoted_shower_kept, dtype=np.float32), axis=0)
+    final_missing = np.clip(actual_sum - final_sum, 0.0, None)
+
+    ticks = np.arange(actual_sum.shape[0], dtype=np.int32)
+    shower_t0 = int(fake_dbg["shower_t0"])
+    shower_tick = int(fake_dbg["peak_tick"])
+
+    fig = make_subplots(
+        rows=2,
+        cols=1,
+        specs=[[{"type": "xy"}], [{"type": "scene"}]],
+        vertical_spacing=0.06,
+        row_heights=[0.34, 0.66],
+        subplot_titles=(
+            "Summed light after fill-hole step and shower promotion",
+            "Clusters promoted to shower t0 on top of prior fill-hole assignments",
+        ),
+    )
+
+    fig.add_trace(
+        go.Scatter(x=ticks, y=actual_sum, mode="lines", line=dict(color="black", width=2), name="Actual sum"),
+        row=1,
+        col=1,
+    )
+    fig.add_trace(
+        go.Scatter(x=ticks, y=base_sum, mode="lines", line=dict(color="royalblue", width=2), name="Before shower promotion"),
+        row=1,
+        col=1,
+    )
+    fig.add_trace(
+        go.Scatter(x=ticks, y=final_sum, mode="lines", line=dict(color="seagreen", width=2), name="After shower promotion"),
+        row=1,
+        col=1,
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=ticks,
+            y=fake_orig_sum,
+            mode="lines",
+            line=dict(color="darkorange", width=1.8, dash="dot"),
+            name="Original fake shower",
+        ),
+        row=1,
+        col=1,
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=ticks,
+            y=fake_remaining_sum,
+            mode="lines",
+            line=dict(color="orange", width=2),
+            name="Remaining fake shower",
+        ),
+        row=1,
+        col=1,
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=ticks,
+            y=promoted_sum,
+            mode="lines",
+            line=dict(color="goldenrod", width=2),
+            name="Promoted shower clusters",
+        ),
+        row=1,
+        col=1,
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=ticks,
+            y=final_missing,
+            mode="lines",
+            line=dict(color="firebrick", width=2, dash="dash"),
+            name="Final peak miss",
+        ),
+        row=1,
+        col=1,
+    )
+
+    ymax = float(np.nanmax(actual_sum)) if actual_sum.size > 0 else 1.0
+    fig.add_vline(x=shower_tick, line_width=1.2, line_dash="dot", line_color="goldenrod", row=1, col=1)
+    fig.add_trace(
+        go.Scatter(
+            x=[shower_tick],
+            y=[0.96 * ymax],
+            mode="markers+text",
+            marker=dict(size=5, color="goldenrod"),
+            text=[f"shower t0={shower_t0}"],
+            textposition="top center",
+            showlegend=False,
+            hoverinfo="skip",
+        ),
+        row=1,
+        col=1,
+    )
+
+    x_tpc = np.asarray(prep["x_tpc"], dtype=np.float32)
+    y_tpc = np.asarray(prep["y_tpc"], dtype=np.float32)
+    z_tpc = np.asarray(prep["z_tpc"], dtype=np.float32)
+    track_mask_tpc = np.asarray(prep["track_mask_tpc"], dtype=bool)
+    nontrack_points = np.asarray(prep["points_nontrack"], dtype=np.float32)
+    nontrack_cluster_labels = np.asarray(cluster_result["nontrack_labels"], dtype=np.int32)
+
+    if np.any(track_mask_tpc):
+        fig.add_trace(
+            go.Scatter3d(
+                x=z_tpc[track_mask_tpc],
+                y=y_tpc[track_mask_tpc],
+                z=x_tpc[track_mask_tpc],
+                mode="markers",
+                marker=dict(size=2.2, color="lightgray", opacity=0.16),
+                name=f"Frozen tracks ({int(np.count_nonzero(track_mask_tpc))} hits)",
+            ),
+            row=2,
+            col=1,
+        )
+
+    fill_rows = fill_result.get("accepted_rows", [])
+    fill_by_cluster = {int(r["cluster_id"]): r for r in fill_rows}
+    shower_by_cluster = {int(r["cluster_id"]): r for r in accepted_rows}
+
+    assigned_fill_ids = set(fill_by_cluster.keys())
+    assigned_shower_ids = set(shower_by_cluster.keys())
+
+    other_mask = np.array(
+        [
+            (int(v) >= 0)
+            and (int(v) not in assigned_fill_ids)
+            and (int(v) not in assigned_shower_ids)
+            for v in nontrack_cluster_labels
+        ],
+        dtype=bool,
+    )
+    if np.any(other_mask):
+        pts = nontrack_points[other_mask]
+        fig.add_trace(
+            go.Scatter3d(
+                x=pts[:, 2],
+                y=pts[:, 1],
+                z=pts[:, 0],
+                mode="markers",
+                marker=dict(size=2.2, color="dimgray", opacity=0.22),
+                name=f"Remaining nontrack hits ({int(np.count_nonzero(other_mask))} hits)",
+            ),
+            row=2,
+            col=1,
+        )
+
+    shown_fill_t0s = sorted(set(int(r["t0"]) for r in fill_rows))
+    fill_t0_color = {}
+    for i, t0 in enumerate(shown_fill_t0s):
+        color_hex, _ = VALID_GROUP_COLORS[i % len(VALID_GROUP_COLORS)]
+        fill_t0_color[int(t0)] = color_hex
+
+    for row in fill_rows:
+        cid = int(row["cluster_id"])
+        cmask = nontrack_cluster_labels == int(cid)
+        pts = nontrack_points[cmask]
+        t0 = int(row["t0"])
+        fig.add_trace(
+            go.Scatter3d(
+                x=pts[:, 2],
+                y=pts[:, 1],
+                z=pts[:, 0],
+                mode="markers",
+                marker=dict(size=3.0, color=fill_t0_color[int(t0)], opacity=0.55),
+                name=f"hole t0={t0} | cluster {cid}",
+                hovertext=[
+                    (
+                        f"cluster={cid}<br>"
+                        f"assigned hole t0={t0}<br>"
+                        f"E={row['energy_mev']:.2f} MeV<br>"
+                        f"delta_loss={row['delta_loss']:.3f}"
+                    )
+                ]
+                * pts.shape[0],
+                hoverinfo="text+x+y+z",
+            ),
+            row=2,
+            col=1,
+        )
+
+    for row in accepted_rows:
+        cid = int(row["cluster_id"])
+        cmask = nontrack_cluster_labels == int(cid)
+        pts = nontrack_points[cmask]
+        hover = (
+            f"cluster={cid}<br>"
+            f"promoted to shower t0={shower_t0}<br>"
+            f"E={row['energy_mev']:.2f} MeV<br>"
+            f"delta_loss={row['delta_loss']:.3f}<br>"
+            f"overlap_frac={row['overlap_fraction']:.3f}<br>"
+            f"excess_frac={row['excess_fraction']:.3f}<br>"
+            f"top old labels={row['top_old_labels_text']}"
+        )
+        fig.add_trace(
+            go.Scatter3d(
+                x=pts[:, 2],
+                y=pts[:, 1],
+                z=pts[:, 0],
+                mode="markers",
+                marker=dict(size=3.6, color="gold", opacity=0.95),
+                text=[hover] * pts.shape[0],
+                hoverinfo="text+x+y+z",
+                name=f"shower t0={shower_t0} | cluster {cid} | E={row['energy_mev']:.1f} MeV",
+            ),
+            row=2,
+            col=1,
+        )
+
+    fig.update_yaxes(title_text="Summed ADC", row=1, col=1)
+    fig.update_xaxes(title_text="Waveform tick", row=1, col=1)
+    fig.update_scenes(xaxis_title="z", yaxis_title="y", zaxis_title="x", row=2, col=1)
+
+    fig.update_layout(
+        title=(
+            f"{title_prefix} | TPC {prep['target_tpc']} | shower t0={shower_t0} | "
+            f"promoted={len(accepted_rows)}"
+        ),
+        margin=dict(l=0, r=0, b=0, t=60),
+        height=1280,
+        showlegend=True,
+    )
+
+    if save_path is not None:
+        fig.write_html(save_path)
+        print(f"Saved html: {save_path}")
+
+    fig.show()
+
+
+def run_greedy_assign_remaining_clusters_to_shower_t0(
+    prep,
+    cluster_result,
+    fake_dbg,
+    fill_result,
+    *,
+    namespace=None,
+    min_cluster_energy_mev=1.0,
+    min_overlap_fraction=0.55,
+    max_excess_fraction=0.35,
+    max_assignments=12,
+    overflow_weight=3.0,
+    min_absolute_improvement=1.0,
+    min_relative_improvement=1.0e-4,
+    local_pad_ticks=18,
+    excess_weight=2.0,
+    max_loss_worsen_abs=0.02,
+    save_path=None,
+    make_plot=True,
+    verbose=True,
+):
+    """
+    Starting from the fill-hole result, greedily promote some remaining reclustered
+    clusters to the main shower t0.
+
+    The current fake shower block is treated as a reservoir that can be replaced by
+    real cluster templates at the same t0. A candidate is only considered if it
+    overlaps sufficiently with the remaining fake shower and does not introduce too
+    much new excess light outside that reservoir.
+    """
+    if namespace is not None:
+        bind_notebook_namespace(namespace)
+
+    target_tpc = int(prep["target_tpc"])
+    shower_t0 = int(fake_dbg["shower_t0"])
+    shower_tick = int(fake_dbg["peak_tick"])
+
+    actual_kept = np.asarray(fake_dbg["actual_kept"], dtype=np.float32)
+    error_kept = np.maximum(np.asarray(fake_dbg["actual_std_kept"], dtype=np.float32), 1e-6)
+    fake_original_kept = np.asarray(fake_dbg["fake_shower_kept"], dtype=np.float32)
+
+    base_model_kept = np.asarray(fill_result["final_model_kept"], dtype=np.float32).copy()
+    nonfake_fixed_kept = base_model_kept - fake_original_kept
+    current_fake_remaining = fake_original_kept.copy()
+    current_promoted_shower = np.zeros_like(fake_original_kept, dtype=np.float32)
+    current_model_kept = nonfake_fixed_kept + current_fake_remaining + current_promoted_shower
+
+    templates, cluster_meta = _build_reclustered_cluster_templates(
+        prep,
+        cluster_result,
+        fake_dbg,
+        min_cluster_energy_mev=min_cluster_energy_mev,
+    )
+
+    already_used = set(int(r["cluster_id"]) for r in fill_result.get("accepted_rows", []))
+    remaining_clusters = set(int(cid) for cid in templates.keys() if int(cid) not in already_used)
+    accepted_rows = []
+
+    if "base_dbg" in fake_dbg:
+        half_window = int(fake_dbg["base_dbg"]["deficit_half_window_ticks"])
+    else:
+        half_window = 18
+
+    lo = max(0, shower_tick - half_window - int(local_pad_ticks))
+    hi = min(actual_kept.shape[1], shower_tick + half_window + int(local_pad_ticks) + 1)
+    focus_mask = np.zeros(actual_kept.shape[1], dtype=bool)
+    focus_mask[lo:hi] = True
+
+    if verbose:
+        print(f"TPC {target_tpc} shower promotion")
+        print(f"  shower t0                : {shower_t0}")
+        print(f"  local window             : [{lo}, {hi})")
+        print(f"  remaining clusters       : {len(remaining_clusters)}")
+
+    for step in range(int(max_assignments)):
+        current_loss = _penalized_error_metric(
+            current_model_kept[:, focus_mask],
+            actual_kept[:, focus_mask],
+            error_kept[:, focus_mask],
+            overflow_weight=overflow_weight,
+        )
+
+        best = None
+        ordered_clusters = sorted(
+            list(remaining_clusters),
+            key=lambda cid: (float(cluster_meta[cid]["energy_mev"]), -int(cid)),
+            reverse=True,
+        )
+
+        for cid in ordered_clusters:
+            wave = templates[int(cid)]
+            meta = cluster_meta[int(cid)]
+            shifted = _shift_block(wave[None, :, :], int(shower_t0), baseline=0.0)[0].astype(np.float32)
+
+            reclaim = np.minimum(shifted, current_fake_remaining)
+            cluster_sum = float(np.sum(shifted))
+            reclaim_sum = float(np.sum(reclaim))
+            excess_sum = float(np.sum(np.clip(shifted - current_fake_remaining, 0.0, None)))
+
+            if cluster_sum <= 0.0:
+                continue
+
+            overlap_fraction = float(reclaim_sum / max(cluster_sum, 1e-9))
+            excess_fraction = float(excess_sum / max(cluster_sum, 1e-9))
+            if overlap_fraction < float(min_overlap_fraction):
+                continue
+            if excess_fraction > float(max_excess_fraction):
+                continue
+
+            candidate_fake_remaining = current_fake_remaining - reclaim
+            candidate_promoted = current_promoted_shower + shifted
+            candidate_model = nonfake_fixed_kept + candidate_fake_remaining + candidate_promoted
+
+            candidate_loss = _penalized_error_metric(
+                candidate_model[:, focus_mask],
+                actual_kept[:, focus_mask],
+                error_kept[:, focus_mask],
+                overflow_weight=overflow_weight,
+            )
+            delta_loss = float(candidate_loss - current_loss)
+
+            peak_contrib = float(np.sum(shifted[:, shower_tick])) if 0 <= shower_tick < shifted.shape[1] else 0.0
+            reclaimed_peak = float(np.sum(reclaim[:, shower_tick])) if 0 <= shower_tick < reclaim.shape[1] else 0.0
+
+            promotion_score = float(reclaim_sum - float(excess_weight) * excess_sum)
+
+            if (
+                (best is None)
+                or (promotion_score > best["promotion_score"])
+                or (
+                    np.isclose(promotion_score, best["promotion_score"])
+                    and delta_loss < best["delta_loss"]
+                )
+            ):
+                top_old_labels_text = ", ".join(
+                    f"{r['old_label']} ({r['fraction_of_old_label']:.2f})" for r in meta["contributors"][:4]
+                )
+                best = {
+                    "step": int(step + 1),
+                    "cluster_id": int(cid),
+                    "energy_mev": float(meta["energy_mev"]),
+                    "n_hits": int(meta["n_hits"]),
+                    "delta_loss": float(delta_loss),
+                    "loss_before": float(current_loss),
+                    "loss_after": float(candidate_loss),
+                    "cluster_sum": float(cluster_sum),
+                    "reclaim_sum": float(reclaim_sum),
+                    "excess_sum": float(excess_sum),
+                    "promotion_score": float(promotion_score),
+                    "overlap_fraction": float(overlap_fraction),
+                    "excess_fraction": float(excess_fraction),
+                    "peak_contrib": float(peak_contrib),
+                    "reclaimed_peak": float(reclaimed_peak),
+                    "candidate_fake_remaining": candidate_fake_remaining,
+                    "candidate_promoted": candidate_promoted,
+                    "candidate_model": candidate_model,
+                    "top_old_labels_text": top_old_labels_text,
+                }
+
+        if best is None:
+            if verbose:
+                print(f"  step {step}: no remaining cluster passed the overlap/excess gates")
+            break
+
+        score_gate = float(min_absolute_improvement)
+        loss_worsen_gate = max(
+            float(max_loss_worsen_abs),
+            float(min_relative_improvement) * max(abs(float(current_loss)), 1.0),
+        )
+        if best["promotion_score"] <= score_gate:
+            if verbose:
+                print(
+                    f"  step {step}: stopping because best promotion_score={best['promotion_score']:.1f} "
+                    f"is not above gate {score_gate:.1f}"
+                )
+            break
+        if best["delta_loss"] > loss_worsen_gate:
+            if verbose:
+                print(
+                    f"  step {step}: stopping because best delta_loss={best['delta_loss']:.3f} "
+                    f"worsens more than allowed {loss_worsen_gate:.3f}"
+                )
+            break
+
+        current_fake_remaining = np.asarray(best["candidate_fake_remaining"], dtype=np.float32)
+        current_promoted_shower = np.asarray(best["candidate_promoted"], dtype=np.float32)
+        current_model_kept = np.asarray(best["candidate_model"], dtype=np.float32)
+        remaining_clusters.remove(int(best["cluster_id"]))
+
+        best.pop("candidate_fake_remaining", None)
+        best.pop("candidate_promoted", None)
+        best.pop("candidate_model", None)
+        accepted_rows.append(best)
+
+        if verbose:
+            print(
+                f"  step {best['step']:2d}: cluster {best['cluster_id']:4d} -> shower t0={shower_t0} | "
+                f"E={best['energy_mev']:.1f} MeV | score={best['promotion_score']:.1f} | "
+                f"delta_loss={best['delta_loss']:.3f} | "
+                f"overlap={best['overlap_fraction']:.3f} | excess={best['excess_fraction']:.3f}"
+            )
+
+    if verbose:
+        print()
+        print("Accepted shower promotions")
+        print(
+            f"{'step':>4} {'cluster':>8} {'E[MeV]':>10} {'score':>12} "
+            f"{'dLoss':>12} {'overlap':>10} {'excess':>10} {'peakAdd':>12}"
+        )
+        print("-" * 88)
+        for row in accepted_rows:
+            print(
+                f"{row['step']:4d} {row['cluster_id']:8d} {row['energy_mev']:10.2f} {row['promotion_score']:12.1f} "
+                f"{row['delta_loss']:12.3f} {row['overlap_fraction']:10.3f} {row['excess_fraction']:10.3f} "
+                f"{row['peak_contrib']:12.1f}"
+            )
+
+    if save_path is None and make_plot:
+        save_path = f"TPC{target_tpc}_shower_t0_promotions.html"
+
+    if make_plot:
+        _plot_shower_cluster_promotion_html(
+            prep,
+            cluster_result,
+            fake_dbg,
+            fill_result,
+            accepted_rows,
+            base_model_kept,
+            current_model_kept,
+            current_fake_remaining,
+            current_promoted_shower,
+            save_path=save_path,
+        )
+
+    return {
+        "target_tpc": int(target_tpc),
+        "shower_t0": int(shower_t0),
+        "window_lo": int(lo),
+        "window_hi": int(hi),
+        "accepted_rows": accepted_rows,
+        "base_model_kept": base_model_kept,
+        "final_model_kept": current_model_kept,
+        "fake_remaining_kept": current_fake_remaining,
+        "promoted_shower_kept": current_promoted_shower,
+        "remaining_cluster_ids": sorted(int(cid) for cid in remaining_clusters),
+        "save_path": None if save_path is None else str(save_path),
+    }
+
+
+def run_tpc_shower_pipeline_v13_3(
+    target_tpc,
+    *,
+    namespace,
+    plot_3d=True,
+    cluster_save_path=None,
+    fake_plot_save_path=None,
+    pulse_peak_tick=105,
+    deficit_half_window_ticks=18,
+    peak_pick_half_window_ticks=3,
+    subtract_tracks_at_peak=True,
+    actual_clip_for_display=None,
+    top_n=12,
+    clustering_kwargs=None,
+    snap_detected_shower_t0_to_candidate=True,
+    **kwargs,
+):
+    """
+    One-call wrapper for the current v13_3 TPC shower workflow.
+
+    Note:
+    - Python identifiers cannot start with a digit, so the switch is named `plot_3d`.
+    - If you pass `**{\"3D_plot\": False}`, that alias is accepted too.
+    """
+    if "3D_plot" in kwargs:
+        plot_3d = bool(kwargs.pop("3D_plot"))
+    if kwargs:
+        raise TypeError(f"Unexpected keyword arguments: {sorted(kwargs.keys())}")
+
+    bind_notebook_namespace(namespace)
+
+    prep = prepare_nontrack_recluster_inputs(target_tpc)
+
+    cluster_kwargs = dict(DEFAULT_CLUSTERING_KWARGS_V13_3)
+    if clustering_kwargs is not None:
+        cluster_kwargs.update(clustering_kwargs)
+
+    if cluster_save_path is None and plot_3d:
+        cluster_save_path = f"TPC{int(target_tpc)}_shower_fragment_tighter.html"
+
+    cluster_kwargs["make_plot"] = bool(plot_3d)
+    cluster_kwargs["save_path"] = cluster_save_path if plot_3d else None
+
+    cluster_result = run_shower_fragment_clustering_tpc_memory_safe(prep, **cluster_kwargs)
+
+    tracks_dbg = build_tpc_tracks_only_light_debug(
+        prep,
+        pulse_peak_tick=pulse_peak_tick,
+        deficit_half_window_ticks=deficit_half_window_ticks,
+        actual_clip_for_display=actual_clip_for_display,
+    )
+
+    shower_pick = detect_shower_t0_from_global_max(
+        tracks_dbg,
+        snap_to_candidate=snap_detected_shower_t0_to_candidate,
+    )
+
+    fake_dbg = build_tpc_fake_single_t0_shower_debug(
+        prep,
+        base_dbg=tracks_dbg,
+        shower_t0=shower_pick["t0"],
+        pulse_peak_tick=pulse_peak_tick,
+        peak_pick_half_window_ticks=peak_pick_half_window_ticks,
+        subtract_tracks_at_peak=subtract_tracks_at_peak,
+        actual_clip_for_display=actual_clip_for_display,
+        deficit_half_window_ticks=deficit_half_window_ticks,
+    )
+
+    print_tpc_fake_single_t0_shower_summary(fake_dbg, top_n=top_n)
+    plot_tpc_fake_single_t0_shower_debug(
+        fake_dbg,
+        title_prefix=f"Tracks + fake shower at t0={fake_dbg['shower_t0']}",
+        save_path=fake_plot_save_path,
+    )
+
+    return {
+        "prep": prep,
+        "cluster_result": cluster_result,
+        "tracks_light_debug": tracks_dbg,
+        "fake_shower_debug": fake_dbg,
+        "detected_shower_peak_tick": int(shower_pick["peak_tick"]),
+        "detected_shower_t0_raw": int(shower_pick["raw_t0"]),
+        "detected_shower_t0": int(shower_pick["t0"]),
+        "clustering_kwargs_used": cluster_kwargs,
+    }
+
+
+__all__ = [
+    "DEFAULT_CLUSTERING_KWARGS_V13_3",
+    "bind_notebook_namespace",
+    "prepare_nontrack_recluster_inputs",
+    "run_shower_fragment_clustering_tpc_memory_safe",
+    "run_shower_fragment_clustering_tpc_memory_safe_default",
+    "build_tpc_tracks_only_light_debug",
+    "plot_tpc_tracks_only_light_debug",
+    "print_tpc_tracks_only_light_summary",
+    "build_tpc_fake_single_t0_shower_debug",
+    "print_tpc_fake_single_t0_shower_summary",
+    "plot_tpc_fake_single_t0_shower_debug",
+    "detect_shower_t0_from_global_max",
+    "run_greedy_fill_hole_assignment_on_reclustered",
+    "run_greedy_assign_remaining_clusters_to_shower_t0",
+    "run_tpc_shower_pipeline_v13_3",
+]

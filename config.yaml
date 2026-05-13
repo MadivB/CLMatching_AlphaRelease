@@ -1,0 +1,186 @@
+# v_alpha_test configuration / schema documentation.
+#
+# This file is the single source of truth for paths + the per-file .pt output
+# schema produced by `scripts/aggregate_to_pt.py`.  The aggregator does NOT
+# read this file at runtime -- its purpose is documentation.  Keep it in
+# sync with `scripts/aggregate_to_pt.py` and `M5p1/phase25_trial2_v_alpha_test.py`.
+
+version: v_alpha_test.1
+algorithm: |
+  v_alpha_test: front-stage + Phase 2 + V2 light rescue + Phase 3 small-cluster
+  matrix.  TF32 + cuDNN.benchmark + torch.compile (default mode, dynamic shapes,
+  per-batch eager fallback) + h5 prefetch.  Per-event NPZ shards are merged into
+  per-file .pt by aggregate_to_pt.py.
+
+# ---------------------------------------------------------------------------
+# Paths.
+
+paths:
+  # Source HDF5 files (default test set).
+  data_dir: >-
+    /global/cfs/cdirs/dunepro/people/abooth/nd-production/output/MiniProdN5/
+    run-ndlar-flow/MiniProdN5p1_NDComplex_FHC.flow.full.sanddrift/FLOW/0000000
+
+  # Where the per-event NPZ shards live (the v_alpha_test batch writes here).
+  shards_dir: /pscratch/sd/y/yuxuan/light_rescue_test/valpha_runs/test10_v_alpha_test
+
+  # Where the per-file .pt outputs land (the aggregator writes here).
+  pt_output_dir: /pscratch/sd/y/yuxuan/light_rescue_test/valpha_runs/test10_v_alpha_test/pt_outputs
+
+  # The two large model weight files are NOT bundled with this folder
+  # (too big for github releases).  They live in the repository's existing
+  # locations.  The front-stage matching package reads them via FirstStageConfig.
+  ml_perceiver_weights: "<external; loaded by M5p1.first_stage_matching.load_first_stage_models>"
+  variance_prediction_weights: "<external; loaded by M5p1.first_stage_matching.load_first_stage_models>"
+
+# ---------------------------------------------------------------------------
+# Per-file .pt schema (one file per source HDF5).
+
+per_file_pt_schema:
+  description: >-
+    One .pt file per source HDF5, named "<basename>.v_alpha_test.pt".  All
+    per-prompt-hit arrays are sized to charge/calib_prompt_hits (the global
+    per-file table) and aligned with it.  Hits not assigned by the pipeline
+    keep the sentinel values listed below.
+
+  fields:
+
+    version:
+      type: str
+      description: Schema/version tag (matches the top-level `version` of this YAML).
+
+    algorithm:
+      type: str
+      description: Free-text description of the pipeline that produced this file.
+
+    input_file:
+      type: str
+      description: Absolute path of the source FLOW HDF5 file.
+
+    calib_hit_t0_reco:
+      type: torch.float32
+      shape: (n_calib_hits,)
+      sentinel: -1.0
+      filled_by:
+        stage: v_alpha_test pipeline (Front + Phase 2 + V2 + Phase 3)
+        module: M5p1.phase25_trial2_v_alpha_test.process_one_event_optimized
+        source_array: hit_timestamps_post_phase3
+        scattered_via: event.hit_refs (in scripts/aggregate_to_pt.py)
+      description: >-
+        Reconstructed t0 in matching ticks for every prompt hit in the source
+        HDF5.  Hits whose event was processed and assigned a finite t0 carry
+        that value; everything else stays at -1.
+
+    prompt_hit_t_cluster_id:
+      type: torch.int16
+      shape: (n_calib_hits,)
+      sentinel: -1
+      filled_by:
+        stage: |
+          (1) front-stage global clustering produces the initial label per hit
+              (labels 0..N-1, with -1 for noise);
+          (2) Phase 2.5 V2 light rescue ("light_moves" + spatial "moved_idx")
+              re-labels every moved-hit group with a brand-new id starting at
+              max(initial_labels) + 1 and incrementing per move.  The
+              remaining hits of the original cluster keep their old id.
+        module: |
+          (1) M5p1.first_stage_matching.clustering.run_global_track_clustering
+          (2) M5p1.phase25_trial2_v_alpha_test.process_one_event_optimized
+              (re-label loop after run_trial2_v2_light_rescue_from_namespace)
+        source_array: |
+          (1) clustering.labels_global    (initial)
+          (2) ns["t_cluster_id"]          (post-V2 re-labeled)
+        scattered_via: event.hit_refs (in scripts/aggregate_to_pt.py)
+      note: >-
+        Per spec: "Each movement during phase 2.5 (light + charge rescue)
+        gives all the moved hits a new clusterid to cover the old ones."
+        Spatial moves are applied first (they happen first in V2), then
+        light moves; later moves override earlier ones for hits that
+        appear in more than one move.  Phase 3 (small-cluster matrix
+        association) does not move hits, so it does not introduce new ids.
+      description: >-
+        Per-prompt-hit cluster id used by the charge-light matching
+        algorithm.  Length equals the calib_prompt_hits table.  Hits not
+        touched by the pipeline carry -1.  Maximum id can exceed the
+        original front-stage cluster count by up to (n_spatial_moves +
+        n_light_moves) per event.  Stored as int16; if a file ever
+        produces > 32767 cluster ids, the aggregator will record a
+        per-event warning in `failed_events` -- consider widening to
+        int32 in that case.
+
+    n_calib_hits:
+      type: int
+      description: Total number of calib_prompt_hits in the source file.
+
+    n_assigned:
+      type: int
+      description: Number of prompt hits with a finite t0 in calib_hit_t0_reco.
+
+    n_unassigned:
+      type: int
+      description: n_calib_hits - n_assigned.
+
+    processed_event_ids:
+      type: torch.int64
+      shape: (n_events_processed,)
+      description: Event ids successfully processed and merged into the per-file .pt.
+
+    all_event_ids:
+      type: torch.int64
+      shape: (n_events_in_file,)
+      description: Every event id in the source HDF5 (from charge/events/data).
+
+    event_summaries:
+      type: list[dict]
+      description: >-
+        Per-processed-event metadata: event_id, n_hits, elapsed_s, and the v2
+        rescue summary (move counts, coverage, phase3 stats).
+
+    failed_events:
+      type: list[dict]
+      description: Events that failed during processing (event_id + error string).
+
+    n_event_shards:
+      type: int
+      description: Number of per-event NPZ shards combined into this .pt file.
+
+    aggregator_elapsed_s:
+      type: float
+      description: Wall-clock time the aggregator spent on this file.
+
+# ---------------------------------------------------------------------------
+# Provenance map: which step writes which per-prompt-hit field.
+
+field_provenance:
+  calib_hit_t0_reco:
+    pipeline_step: full v_alpha_test pipeline (Front + Phase 2 + V2 light rescue + Phase 3)
+    written_in:
+      module: M5p1.phase25_trial2_v_alpha_test
+      function: process_one_event_optimized
+      shard_key: hit_timestamps_post_phase3 (per-event NPZ)
+    aggregated_in:
+      module: scripts/aggregate_to_pt.py
+      function: _aggregate_one_file
+
+  prompt_hit_t_cluster_id:
+    pipeline_step: front-stage clustering + Phase 2.5 V2 light-rescue re-labeling
+    written_in:
+      initial:
+        module: M5p1.first_stage_matching.clustering
+        function: run_global_track_clustering
+        shard_key: labels_global (per-event NPZ; kept for debug/audit)
+      relabel:
+        module: M5p1.phase25_trial2_v_alpha_test
+        function: process_one_event_optimized
+        shard_key: t_cluster_id (per-event NPZ; aggregator prefers this when present)
+        rule: >-
+          For each spatial move and each light move in V2 (in that order),
+          assign all moved hits a new cluster id = max(current ids) + 1.
+          Original cluster ids are preserved on un-moved hits.
+    aggregated_in:
+      module: scripts/aggregate_to_pt.py
+      function: _aggregate_one_file
+      detail: >-
+        Aggregator scatters per-event t_cluster_id (preferred) or
+        labels_global (fallback) into the file-level
+        prompt_hit_t_cluster_id array via event.hit_refs.

@@ -1,0 +1,94 @@
+========================================
+Job started: Mon Mar  9 09:41:37 AM PDT 2026
+Node: nid004056
+Job ID: 49794166
+========================================
+W0309 09:41:52.683000 841981 /global/u1/y/yuxuan/.local/perlmutter/python-3.13/26.1.0/lib/python3.13/site-packages/torch/distributed/run.py:852] 
+W0309 09:41:52.683000 841981 /global/u1/y/yuxuan/.local/perlmutter/python-3.13/26.1.0/lib/python3.13/site-packages/torch/distributed/run.py:852] *****************************************
+W0309 09:41:52.683000 841981 /global/u1/y/yuxuan/.local/perlmutter/python-3.13/26.1.0/lib/python3.13/site-packages/torch/distributed/run.py:852] Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed. 
+W0309 09:41:52.683000 841981 /global/u1/y/yuxuan/.local/perlmutter/python-3.13/26.1.0/lib/python3.13/site-packages/torch/distributed/run.py:852] *****************************************
+Starting 3D Cross-Attention Perceiver Training optimized for NDLAr-full geometries!
+/global/homes/y/yuxuan/.local/perlmutter/python-3.13/26.1.0/lib/python3.13/site-packages/zarr/core/group.py:579: ZarrUserWarning: Both zarr.json (Zarr format 3) and .zgroup (Zarr format 2) metadata objects exist at file://zarr_outputs_enhanced/MiniProdN5p1_NDComplex_FHC.flow.full.lowintensity.sanddrift.0000001.FLOW.zarr. Zarr format 3 will be used.
+  warnings.warn(msg, category=ZarrUserWarning, stacklevel=1)
+/global/homes/y/yuxuan/.local/perlmutter/python-3.13/26.1.0/lib/python3.13/site-packages/zarr/core/group.py:579: ZarrUserWarning: Both zarr.json (Zarr format 3) and .zgroup (Zarr format 2) metadata objects exist at file://zarr_outputs_enhanced/MiniProdN5p1_NDComplex_FHC.flow.full.lowintensity.sanddrift.0000001.FLOW.zarr. Zarr format 3 will be used.
+  warnings.warn(msg, category=ZarrUserWarning, stacklevel=1)
+/global/homes/y/yuxuan/.local/perlmutter/python-3.13/26.1.0/lib/python3.13/site-packages/zarr/core/group.py:579: ZarrUserWarning: Both zarr.json (Zarr format 3) and .zgroup (Zarr format 2) metadata objects exist at file://zarr_outputs_enhanced/MiniProdN5p1_NDComplex_FHC.flow.full.lowintensity.sanddrift.0000001.FLOW.zarr. Zarr format 3 will be used.
+  warnings.warn(msg, category=ZarrUserWarning, stacklevel=1)
+/global/homes/y/yuxuan/.local/perlmutter/python-3.13/26.1.0/lib/python3.13/site-packages/zarr/core/group.py:579: ZarrUserWarning: Both zarr.json (Zarr format 3) and .zgroup (Zarr format 2) metadata objects exist at file://zarr_outputs_enhanced/MiniProdN5p1_NDComplex_FHC.flow.full.lowintensity.sanddrift.0000001.FLOW.zarr. Zarr format 3 will be used.
+  warnings.warn(msg, category=ZarrUserWarning, stacklevel=1)
+/global/homes/y/yuxuan/.local/perlmutter/python-3.13/26.1.0/lib/python3.13/site-packages/zarr/core/group.py:579: ZarrUserWarning: Both zarr.json (Zarr format 3) and .zgroup (Zarr format 2) metadata objects exist at file://zarr_outputs_enhanced/MiniProdN5p1_NDComplex_FHC.flow.full.lowintensity.sanddrift.0000002.FLOW.zarr. Zarr format 3 will be used.
+  warnings.warn(msg, category=ZarrUserWarning, stacklevel=1)
+/global/homes/y/yuxuan/.local/perlmutter/python-3.13/26.1.0/lib/python3.13/site-packages/zarr/core/group.py:579: ZarrUserWarning: Both zarr.json (Zarr format 3) and .zgroup (Zarr format 2) metadata objects exist at file://zarr_outputs_enhanced/MiniProdN5p1_NDComplex_FHC.flow.full.lowintensity.sanddrift.0000002.FLOW.zarr. Zarr format 3 will be used.
+  warnings.warn(msg, category=ZarrUserWarning, stacklevel=1)
+/global/homes/y/yuxuan/.local/perlmutter/python-3.13/26.1.0/lib/python3.13/site-packages/zarr/core/group.py:579: ZarrUserWarning: Both zarr.json (Zarr format 3) and .zgroup (Zarr format 2) metadata objects exist at file://zarr_outputs_enhanced/MiniProdN5p1_NDComplex_FHC.flow.full.lowintensity.sanddrift.0000002.FLOW.zarr. Zarr format 3 will be used.
+  warnings.warn(msg, category=ZarrUserWarning, stacklevel=1)
+/global/homes/y/yuxuan/.local/perlmutter/python-3.13/26.1.0/lib/python3.13/site-packages/zarr/core/group.py:579: ZarrUserWarning: Both zarr.json (Zarr format 3) and .zgroup (Zarr format 2) metadata objects exist at file://zarr_outputs_enhanced/MiniProdN5p1_NDComplex_FHC.flow.full.lowintensity.sanddrift.0000002.FLOW.zarr. Zarr format 3 will be used.
+  warnings.warn(msg, category=ZarrUserWarning, stacklevel=1)
+/global/homes/y/yuxuan/.local/perlmutter/python-3.13/26.1.0/lib/python3.13/site-packages/zarr/core/group.py:579: ZarrUserWarning: Both zarr.json (Zarr format 3) and .zgroup (Zarr format 2) metadata objects exist at file://zarr_outputs_enhanced/MiniProdN5p1_NDComplex_FHC.flow.full.lowintensity.sanddrift.0000003.FLOW.zarr. Zarr format 3 will be used.
+  warnings.warn(msg, category=ZarrUserWarning, stacklevel=1)
+/global/homes/y/yuxuan/.local/perlmutter/python-3.13/26.1.0/lib/python3.13/site-packages/zarr/core/group.py:579: ZarrUserWarning: Both zarr.json (Zarr format 3) and .zgroup (Zarr format 2) metadata objects exist at file://zarr_outputs_enhanced/MiniProdN5p1_NDComplex_FHC.flow.full.lowintensity.sanddrift.0000003.FLOW.zarr. Zarr format 3 will be used.
+  warnings.warn(msg, category=ZarrUserWarning, stacklevel=1)
+/global/homes/y/yuxuan/.local/perlmutter/python-3.13/26.1.0/lib/python3.13/site-packages/zarr/core/group.py:579: ZarrUserWarning: Both zarr.json (Zarr format 3) and .zgroup (Zarr format 2) metadata objects exist at file://zarr_outputs_enhanced/MiniProdN5p1_NDComplex_FHC.flow.full.lowintensity.sanddrift.0000003.FLOW.zarr. Zarr format 3 will be used.
+  warnings.warn(msg, category=ZarrUserWarning, stacklevel=1)
+/global/homes/y/yuxuan/.local/perlmutter/python-3.13/26.1.0/lib/python3.13/site-packages/zarr/core/group.py:579: ZarrUserWarning: Both zarr.json (Zarr format 3) and .zgroup (Zarr format 2) metadata objects exist at file://zarr_outputs_enhanced/MiniProdN5p1_NDComplex_FHC.flow.full.lowintensity.sanddrift.0000003.FLOW.zarr. Zarr format 3 will be used.
+  warnings.warn(msg, category=ZarrUserWarning, stacklevel=1)
+/global/homes/y/yuxuan/.local/perlmutter/python-3.13/26.1.0/lib/python3.13/site-packages/zarr/core/group.py:579: ZarrUserWarning: Both zarr.json (Zarr format 3) and .zgroup (Zarr format 2) metadata objects exist at file://zarr_outputs_enhanced/MiniProdN5p1_NDComplex_FHC.flow.full.lowintensity.sanddrift.0000004.FLOW.zarr. Zarr format 3 will be used.
+  warnings.warn(msg, category=ZarrUserWarning, stacklevel=1)
+/global/homes/y/yuxuan/.local/perlmutter/python-3.13/26.1.0/lib/python3.13/site-packages/zarr/core/group.py:579: ZarrUserWarning: Both zarr.json (Zarr format 3) and .zgroup (Zarr format 2) metadata objects exist at file://zarr_outputs_enhanced/MiniProdN5p1_NDComplex_FHC.flow.full.lowintensity.sanddrift.0000004.FLOW.zarr. Zarr format 3 will be used.
+  warnings.warn(msg, category=ZarrUserWarning, stacklevel=1)
+/global/homes/y/yuxuan/.local/perlmutter/python-3.13/26.1.0/lib/python3.13/site-packages/zarr/core/group.py:579: ZarrUserWarning: Both zarr.json (Zarr format 3) and .zgroup (Zarr format 2) metadata objects exist at file://zarr_outputs_enhanced/MiniProdN5p1_NDComplex_FHC.flow.full.lowintensity.sanddrift.0000004.FLOW.zarr. Zarr format 3 will be used.
+  warnings.warn(msg, category=ZarrUserWarning, stacklevel=1)
+/global/homes/y/yuxuan/.local/perlmutter/python-3.13/26.1.0/lib/python3.13/site-packages/zarr/core/group.py:579: ZarrUserWarning: Both zarr.json (Zarr format 3) and .zgroup (Zarr format 2) metadata objects exist at file://zarr_outputs_enhanced/MiniProdN5p1_NDComplex_FHC.flow.full.lowintensity.sanddrift.0000004.FLOW.zarr. Zarr format 3 will be used.
+  warnings.warn(msg, category=ZarrUserWarning, stacklevel=1)
+/global/homes/y/yuxuan/.local/perlmutter/python-3.13/26.1.0/lib/python3.13/site-packages/zarr/core/group.py:579: ZarrUserWarning: Both zarr.json (Zarr format 3) and .zgroup (Zarr format 2) metadata objects exist at file://zarr_outputs_enhanced/MiniProdN5p1_NDComplex_FHC.flow.full.lowintensity.sanddrift.0000005.FLOW.zarr. Zarr format 3 will be used.
+  warnings.warn(msg, category=ZarrUserWarning, stacklevel=1)
+/global/homes/y/yuxuan/.local/perlmutter/python-3.13/26.1.0/lib/python3.13/site-packages/zarr/core/group.py:579: ZarrUserWarning: Both zarr.json (Zarr format 3) and .zgroup (Zarr format 2) metadata objects exist at file://zarr_outputs_enhanced/MiniProdN5p1_NDComplex_FHC.flow.full.lowintensity.sanddrift.0000005.FLOW.zarr. Zarr format 3 will be used.
+  warnings.warn(msg, category=ZarrUserWarning, stacklevel=1)
+/global/homes/y/yuxuan/.local/perlmutter/python-3.13/26.1.0/lib/python3.13/site-packages/zarr/core/group.py:579: ZarrUserWarning: Both zarr.json (Zarr format 3) and .zgroup (Zarr format 2) metadata objects exist at file://zarr_outputs_enhanced/MiniProdN5p1_NDComplex_FHC.flow.full.lowintensity.sanddrift.0000005.FLOW.zarr. Zarr format 3 will be used.
+  warnings.warn(msg, category=ZarrUserWarning, stacklevel=1)
+/global/homes/y/yuxuan/.local/perlmutter/python-3.13/26.1.0/lib/python3.13/site-packages/zarr/core/group.py:579: ZarrUserWarning: Both zarr.json (Zarr format 3) and .zgroup (Zarr format 2) metadata objects exist at file://zarr_outputs_enhanced/MiniProdN5p1_NDComplex_FHC.flow.full.lowintensity.sanddrift.0000005.FLOW.zarr. Zarr format 3 will be used.
+  warnings.warn(msg, category=ZarrUserWarning, stacklevel=1)
+/global/homes/y/yuxuan/.local/perlmutter/python-3.13/26.1.0/lib/python3.13/site-packages/zarr/core/group.py:579: ZarrUserWarning: Both zarr.json (Zarr format 3) and .zgroup (Zarr format 2) metadata objects exist at file://zarr_outputs_enhanced/MiniProdN5p1_NDComplex_FHC.flow.full.lowintensity.sanddrift.0000006.FLOW.zarr. Zarr format 3 will be used.
+  warnings.warn(msg, category=ZarrUserWarning, stacklevel=1)
+/global/homes/y/yuxuan/.local/perlmutter/python-3.13/26.1.0/lib/python3.13/site-packages/zarr/core/group.py:579: ZarrUserWarning: Both zarr.json (Zarr format 3) and .zgroup (Zarr format 2) metadata objects exist at file://zarr_outputs_enhanced/MiniProdN5p1_NDComplex_FHC.flow.full.lowintensity.sanddrift.0000006.FLOW.zarr. Zarr format 3 will be used.
+  warnings.warn(msg, category=ZarrUserWarning, stacklevel=1)
+/global/homes/y/yuxuan/.local/perlmutter/python-3.13/26.1.0/lib/python3.13/site-packages/zarr/core/group.py:579: ZarrUserWarning: Both zarr.json (Zarr format 3) and .zgroup (Zarr format 2) metadata objects exist at file://zarr_outputs_enhanced/MiniProdN5p1_NDComplex_FHC.flow.full.lowintensity.sanddrift.0000006.FLOW.zarr. Zarr format 3 will be used.
+  warnings.warn(msg, category=ZarrUserWarning, stacklevel=1)
+/global/homes/y/yuxuan/.local/perlmutter/python-3.13/26.1.0/lib/python3.13/site-packages/zarr/core/group.py:579: ZarrUserWarning: Both zarr.json (Zarr format 3) and .zgroup (Zarr format 2) metadata objects exist at file://zarr_outputs_enhanced/MiniProdN5p1_NDComplex_FHC.flow.full.lowintensity.sanddrift.0000006.FLOW.zarr. Zarr format 3 will be used.
+  warnings.warn(msg, category=ZarrUserWarning, stacklevel=1)
+/global/homes/y/yuxuan/.local/perlmutter/python-3.13/26.1.0/lib/python3.13/site-packages/zarr/core/group.py:579: ZarrUserWarning: Both zarr.json (Zarr format 3) and .zgroup (Zarr format 2) metadata objects exist at file://zarr_outputs_enhanced/MiniProdN5p1_NDComplex_FHC.flow.full.lowintensity.sanddrift.0000007.FLOW.zarr. Zarr format 3 will be used.
+  warnings.warn(msg, category=ZarrUserWarning, stacklevel=1)
+/global/homes/y/yuxuan/.local/perlmutter/python-3.13/26.1.0/lib/python3.13/site-packages/zarr/core/group.py:579: ZarrUserWarning: Both zarr.json (Zarr format 3) and .zgroup (Zarr format 2) metadata objects exist at file://zarr_outputs_enhanced/MiniProdN5p1_NDComplex_FHC.flow.full.lowintensity.sanddrift.0000007.FLOW.zarr. Zarr format 3 will be used.
+  warnings.warn(msg, category=ZarrUserWarning, stacklevel=1)
+/global/homes/y/yuxuan/.local/perlmutter/python-3.13/26.1.0/lib/python3.13/site-packages/zarr/core/group.py:579: ZarrUserWarning: Both zarr.json (Zarr format 3) and .zgroup (Zarr format 2) metadata objects exist at file://zarr_outputs_enhanced/MiniProdN5p1_NDComplex_FHC.flow.full.lowintensity.sanddrift.0000007.FLOW.zarr. Zarr format 3 will be used.
+  warnings.warn(msg, category=ZarrUserWarning, stacklevel=1)
+/global/homes/y/yuxuan/.local/perlmutter/python-3.13/26.1.0/lib/python3.13/site-packages/zarr/core/group.py:579: ZarrUserWarning: Both zarr.json (Zarr format 3) and .zgroup (Zarr format 2) metadata objects exist at file://zarr_outputs_enhanced/MiniProdN5p1_NDComplex_FHC.flow.full.lowintensity.sanddrift.0000007.FLOW.zarr. Zarr format 3 will be used.
+  warnings.warn(msg, category=ZarrUserWarning, stacklevel=1)
+/global/homes/y/yuxuan/.local/perlmutter/python-3.13/26.1.0/lib/python3.13/site-packages/zarr/core/group.py:579: ZarrUserWarning: Both zarr.json (Zarr format 3) and .zgroup (Zarr format 2) metadata objects exist at file://zarr_outputs_enhanced/MiniProdN5p1_NDComplex_FHC.flow.full.lowintensity.sanddrift.0000008.FLOW.zarr. Zarr format 3 will be used.
+  warnings.warn(msg, category=ZarrUserWarning, stacklevel=1)
+/global/homes/y/yuxuan/.local/perlmutter/python-3.13/26.1.0/lib/python3.13/site-packages/zarr/core/group.py:579: ZarrUserWarning: Both zarr.json (Zarr format 3) and .zgroup (Zarr format 2) metadata objects exist at file://zarr_outputs_enhanced/MiniProdN5p1_NDComplex_FHC.flow.full.lowintensity.sanddrift.0000008.FLOW.zarr. Zarr format 3 will be used.
+  warnings.warn(msg, category=ZarrUserWarning, stacklevel=1)
+/global/homes/y/yuxuan/.local/perlmutter/python-3.13/26.1.0/lib/python3.13/site-packages/zarr/core/group.py:579: ZarrUserWarning: Both zarr.json (Zarr format 3) and .zgroup (Zarr format 2) metadata objects exist at file://zarr_outputs_enhanced/MiniProdN5p1_NDComplex_FHC.flow.full.lowintensity.sanddrift.0000008.FLOW.zarr. Zarr format 3 will be used.
+  warnings.warn(msg, category=ZarrUserWarning, stacklevel=1)
+/global/homes/y/yuxuan/.local/perlmutter/python-3.13/26.1.0/lib/python3.13/site-packages/zarr/core/group.py:579: ZarrUserWarning: Both zarr.json (Zarr format 3) and .zgroup (Zarr format 2) metadata objects exist at file://zarr_outputs_enhanced/MiniProdN5p1_NDComplex_FHC.flow.full.lowintensity.sanddrift.0000008.FLOW.zarr. Zarr format 3 will be used.
+  warnings.warn(msg, category=ZarrUserWarning, stacklevel=1)
+Fitting Target Standardizers...
+Resuming training from full checkpoint: ./runs/ndfull_run_distributed/checkpoint.pt
+Epoch 008.2/5 | Train Loss: 0.0603 | Train R2: 0.9509 | Val MSE: 465741.3438 | Val R2: 0.9784
+Epoch 008.3/5 | Train Loss: 0.0560 | Train R2: 0.9561 | Val MSE: 391199.5000 | Val R2: 0.9842
+  ✓ Saved new best model
+Epoch 008.4/5 | Train Loss: 0.0572 | Train R2: 0.9592 | Val MSE: 431880.0312 | Val R2: 0.9807
+Epoch 008.5/5 | Train Loss: 0.0544 | Train R2: 0.9600 | Val MSE: 455884.1562 | Val R2: 0.9819
+Epoch 009.1/5 | Train Loss: 0.0525 | Train R2: 0.9592 | Val MSE: 412075.6250 | Val R2: 0.9841
+Epoch 009.2/5 | Train Loss: 0.0527 | Train R2: 0.9579 | Val MSE: 499080.4375 | Val R2: 0.9824
+Epoch 009.3/5 | Train Loss: 0.0510 | Train R2: 0.9611 | Val MSE: 443493.0312 | Val R2: 0.9794
+Epoch 009.4/5 | Train Loss: 0.0531 | Train R2: 0.9625 | Val MSE: 459680.0312 | Val R2: 0.9831
+Epoch 009.5/5 | Train Loss: 0.0537 | Train R2: 0.9563 | Val MSE: 453367.2188 | Val R2: 0.9803
+Epoch 010.1/5 | Train Loss: 0.0506 | Train R2: 0.9533 | Val MSE: 392988.1875 | Val R2: 0.9847
+Epoch 010.2/5 | Train Loss: 0.0511 | Train R2: 0.9596 | Val MSE: 417364.5000 | Val R2: 0.9830
+Epoch 010.3/5 | Train Loss: 0.0489 | Train R2: 0.9649 | Val MSE: 378067.5312 | Val R2: 0.9854
+  ✓ Saved new best model
+Epoch 010.4/5 | Train Loss: 0.0487 | Train R2: 0.9636 | Val MSE: 388087.3125 | Val R2: 0.9851
+Epoch 010.5/5 | Train Loss: 0.0478 | Train R2: 0.9658 | Val MSE: 467485.4688 | Val R2: 0.9715
+Epoch 011.1/5 | Train Loss: 0.0462 | Train R2: 0.9681 | Val MSE: 402024.1562 | Val R2: 0.9823
+slurmstepd: error: *** JOB 49794166 ON nid004056 CANCELLED AT 2026-03-10T16:41:34 DUE TO TIME LIMIT ***

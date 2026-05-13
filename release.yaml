@@ -1,0 +1,155 @@
+# v_alpha_test release manifest.
+#
+# Single source of truth for every external file the v_alpha_test pipeline
+# loads at runtime, plus its size, role, and whether it should be bundled
+# with the GitHub release or shipped separately.
+#
+# Three categories:
+#   bundle     -- small enough to ship in the GitHub release (commit it)
+#   release    -- too big for git; ship as a GitHub Release asset (uploaded
+#                 separately, downloaded by users via release URL)
+#   external   -- not produced/owned by this repo; documented here only
+#
+# Update this file whenever a path changes in
+# `M5p1.first_stage_matching.config.FirstStageConfig`.
+
+version: v_alpha_test.1
+
+# ---------------------------------------------------------------------------
+# Pipeline assets (loaded by the front stage at startup).
+
+assets:
+
+  perceiver_charge_light_relation:
+    role: |
+      Attention-based perceiver model that predicts per-cluster light
+      amplitudes given the 3D voxelized charge.  This is the "charge -> light"
+      relation used to score cluster placements in Phase 2 / Phase 3.
+    path: /global/cfs/cdirs/dune/users/yuxuan/NDLAr-full/M5p1ReleaseVersion/NewMLSection/runs/ndfull_run_distributed/checkpoint.pt
+    relative_to_repo: NewMLSection/runs/ndfull_run_distributed/checkpoint.pt
+    file_type: pt
+    size_mb: 489.8
+    sha256: ""    # fill in with `sha256sum <path>` when cutting a release
+    consumed_by:
+      module: M5p1.first_stage_matching.prediction
+      function: load_first_stage_models
+      config_field: FirstStageConfig.model.light_checkpoint
+    distribution: release
+    notes: |
+      Too large for a normal git commit.  Upload as a GitHub Release asset
+      and reference it in the release notes.  Users download separately
+      and place at the path above (or re-point FirstStageConfig.model.light_checkpoint).
+
+  variance_prediction:
+    role: |
+      Per-channel light-waveform standard-deviation predictor.  Runs once
+      per event, not per cluster.  Outputs `fullLightStd_phase1` and
+      `fullLightStd_phase2`, used by the V2 light rescue chi2 gate.
+    path_candidates:
+      # First existing path is used; if none exist, the front stage falls
+      # back to a constant-std proxy when allow_variance_fallback=True
+      # (which is the default).  The current run was made with the
+      # constant-std fallback because no variance checkpoint exists yet.
+      - /global/cfs/cdirs/dune/users/yuxuan/NDLAr-full/M5p1ReleaseVersion/NewMLSection/var_prediction/runs/var_run_perceiver_aligned_0001000_v2/best_model.pt
+      - /global/cfs/cdirs/dune/users/yuxuan/NDLAr-full/M5p1ReleaseVersion/NewMLSection/var_prediction/runs/var_run_perceiver_aligned_0001000_v2/checkpoint.pt
+    relative_to_repo: NewMLSection/var_prediction/runs/var_run_perceiver_aligned_0001000_v2/{best_model,checkpoint}.pt
+    file_type: pt
+    size_mb: "TBD (model not yet trained for this release)"
+    sha256: ""
+    consumed_by:
+      module: M5p1.first_stage_matching.prediction
+      function: load_first_stage_models
+      config_field: FirstStageConfig.model.variance_checkpoints
+    distribution: release
+    optional: true
+    fallback_behavior: |
+      `FirstStageConfig.model.allow_variance_fallback = True` by default,
+      so a missing variance checkpoint causes the front stage to use a
+      constant-std proxy.  The pipeline still runs and produces sensible
+      coverage (~98.7% in our test).  Once a real variance checkpoint
+      exists, drop it at one of `path_candidates` -- no code change needed.
+    notes: |
+      Too large for git commit even when present.  Same bundling story
+      as the perceiver: ship as a GitHub Release asset.
+
+  pulse_template:
+    role: |
+      Per-tick PMT pulse-shape template (length 1000, float32).  Used by
+      the front-stage placement and by V2 family-image updates as the
+      basis function for converting amplitudes to waveforms.
+    path: /global/cfs/cdirs/dune/users/yuxuan/interactLevel/clusteringStudy/dataDrivenLUTtable/MLApproach/CNNApproach/avg_pulse.npy
+    relative_to_repo: assets/avg_pulse.npy
+    file_type: npy
+    size_mb: 0.004
+    sha256: ""    # fill in when cutting a release
+    consumed_by:
+      module: M5p1.first_stage_matching.prediction
+      function: load_first_stage_models
+      config_field: FirstStageConfig.model.pulse_template
+    distribution: bundle
+    notes: |
+      Tiny -- commit directly into the repo at `assets/avg_pulse.npy`,
+      then update `FirstStageConfig.model.pulse_template` to point at
+      that relative path so the install is self-contained.
+
+# ---------------------------------------------------------------------------
+# Input data (HDF5 files; not bundled, used for tests and demos).
+
+input_data:
+
+  default_test_file:
+    description: |
+      The default single file for v_alpha_test smoke tests
+      (run_v_alpha_test_pt_one_file.sh).  13 events, ~244k hits/event.
+    path: /global/cfs/cdirs/dunepro/people/abooth/nd-production/output/MiniProdN5/run-ndlar-flow/MiniProdN5p1_NDComplex_FHC.flow.full.sanddrift/FLOW/0000000/MiniProdN5p1_NDComplex_FHC.flow.full.sanddrift.0000001.FLOW.hdf5
+    distribution: external
+    notes: |
+      Production HDF5 from the MiniProdN5 sample.  Not part of the GitHub
+      release; users on NERSC have it under /global/cfs/cdirs/dunepro/.
+
+  default_10_file_set:
+    description: |
+      Files 0000001 .. 0000010 in the same directory; ~13 events each =
+      ~130 events total.  Used by the parallel-8 launcher for the
+      ~30-min throughput test.
+    path_glob: /global/cfs/cdirs/dunepro/people/abooth/nd-production/output/MiniProdN5/run-ndlar-flow/MiniProdN5p1_NDComplex_FHC.flow.full.sanddrift/FLOW/0000000/MiniProdN5p1_NDComplex_FHC.flow.full.sanddrift.000000[1-9].FLOW.hdf5
+    distribution: external
+
+# ---------------------------------------------------------------------------
+# Output schema (where each per-prompt-hit field comes from).
+
+per_file_pt_output_schema:
+  description: See config.yaml -- this section is just a pointer.
+  filename_pattern: <basename>.v_alpha_test.pt
+  default_output_dir: /pscratch/sd/y/yuxuan/light_rescue_test/valpha_runs/test_one_file/pt_outputs
+
+# ---------------------------------------------------------------------------
+# Repository structure that the GitHub release should ship.
+
+github_release_layout:
+  repo_root_recommended: v_alpha_test/   # this folder, plus the M5p1 / NewMLSection symlinks resolved to copies for the release
+  ship:
+    - README.md
+    - config.yaml
+    - release.yaml          # this file
+    - scripts/aggregate_to_pt.py
+    - scripts/inspect_pt.py
+    - scripts/run_v_alpha_test_pt_parallel8.sh
+    - scripts/run_v_alpha_test_pt_one_file.sh
+    - M5p1/                 # the entire M5p1 package (source code only, no model weights)
+    - NewMLSection/         # source code (the perceiver model code; weights are ship-as-release-asset)
+    - assets/avg_pulse.npy  # bundled pulse template (after committing)
+  exclude_from_git:
+    - "*.pt"                # release asset, not committed
+    - "**/__pycache__/"
+    - "**/.ipynb_checkpoints/"
+    - "output/"             # local landing pad
+    - "checkpoint*.pt"
+    - "best_model.pt"
+  github_release_assets:
+    - perceiver_charge_light_relation: |
+        upload as 'perceiver_charge_light_relation_v_alpha_test.pt'
+        users download via the GitHub Release page
+    - variance_prediction (when available): |
+        upload as 'variance_prediction_v_alpha_test.pt'
+        optional -- pipeline runs without it
