@@ -29,7 +29,8 @@ assets:
     relative_to_repo: NewMLSection/runs/ndfull_run_distributed/checkpoint.pt
     file_type: pt
     size_mb: 489.8
-    sha256: ""    # fill in with `sha256sum <path>` when cutting a release
+    sha256: "38655cca2b50f2caa643ef572fb80c77332611eafd3a831215cbe0f117473ac5"
+    release_asset_url: https://github.com/MadivB/v_alpha_test/releases/download/v0.1.0/perceiver_charge_light_relation_v_alpha_test.pt
     consumed_by:
       module: M5p1.first_stage_matching.prediction
       function: load_first_stage_models
@@ -81,7 +82,7 @@ assets:
     relative_to_repo: assets/avg_pulse.npy
     file_type: npy
     size_mb: 0.004
-    sha256: ""    # fill in when cutting a release
+    sha256: "cf52a851ab5d44f8b4804995fd8d5bcc662904a4fd9b96f62d3fb38dc8af6a7b"
     consumed_by:
       module: M5p1.first_stage_matching.prediction
       function: load_first_stage_models

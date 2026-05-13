@@ -10,13 +10,30 @@
 
 set -euo pipefail
 
-PY=/global/common/software/nersc/pe/conda-envs/26.1.0/python-3.13/nersc-python/bin/python
-REPO=/global/cfs/cdirs/dune/users/yuxuan/NDLAr-full/M5p1ReleaseVersion
-HERE=/global/cfs/cdirs/dune/users/yuxuan/NDLAr-full/v_alpha_test
-DATA_DIR=/global/cfs/cdirs/dunepro/people/abooth/nd-production/output/MiniProdN5/run-ndlar-flow/MiniProdN5p1_NDComplex_FHC.flow.full.sanddrift/FLOW/0000000
+# Auto-detect the v_alpha_test repo root from the script's own location.
+# Both REPO (the python package root, where `M5p1/` lives) and HERE (this
+# repo, where scripts/ + config.yaml live) point at the same directory in
+# the GitHub-style layout.  Override either via environment variable.
+HERE=${HERE:-"$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"}
+REPO=${REPO:-"$HERE"}
+PY=${PY:-/global/common/software/nersc/pe/conda-envs/26.1.0/python-3.13/nersc-python/bin/python}
+
+# Default DATA_DIR comes from paths.yaml (input_data.default_data_dir).
+# Falls back to the legacy NERSC location if the helper isn't available.
+if [[ -z "${DATA_DIR:-}" ]]; then
+    DATA_DIR=$($PY -c "
+import sys; sys.path.insert(0, '$REPO')
+try:
+    from M5p1.first_stage_matching.asset_resolver import resolve_input_data_dir
+    print(resolve_input_data_dir(default='') or '')
+except Exception:
+    print('')
+" 2>/dev/null)
+fi
+DATA_DIR=${DATA_DIR:-/global/cfs/cdirs/dunepro/people/abooth/nd-production/output/MiniProdN5/run-ndlar-flow/MiniProdN5p1_NDComplex_FHC.flow.full.sanddrift/FLOW/0000000}
 
 FILE=${FILE:-${1:-${DATA_DIR}/MiniProdN5p1_NDComplex_FHC.flow.full.sanddrift.0000001.FLOW.hdf5}}
-OUT_DIR=${OUT_DIR:-/pscratch/sd/y/yuxuan/light_rescue_test/valpha_runs/test_one_file}
+OUT_DIR=${OUT_DIR:-${HERE}/output/test_one_file}
 PT_DIR=${PT_DIR:-${OUT_DIR}/pt_outputs}
 LOG_DIR=${LOG_DIR:-${OUT_DIR}/parallel8_logs}
 N_OUTER_PASSES=${N_OUTER_PASSES:-1}

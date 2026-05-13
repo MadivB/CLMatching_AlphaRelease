@@ -1,0 +1,64 @@
+# v_alpha_test paths configuration
+# ===================================================================
+# Edit this file to point at YOUR local copies of the model weights,
+# the pulse-shape template, and the input data.
+#
+# Each `path:` entry can be:
+#   - relative to the v_alpha_test repo root (e.g. "assets/avg_pulse.npy"),
+#   - or absolute (e.g. "/global/.../checkpoint.pt", "~/models/x.pt").
+#
+# `path_candidates:` is a list — the first existing path wins.  Use this
+# when you have several copies of an asset on disk.
+#
+# At pipeline startup the front stage validates every `required: true`
+# asset.  If something is missing you'll get a clear error telling you
+# exactly which path is missing and how to fix it.
+
+# -------------------------------------------------------------------
+# ML / template assets that the pipeline LOADS at runtime.
+
+assets:
+
+  # Attention-based perceiver: the "charge -> light" relation that drives
+  # Phase 2 / Phase 3 placement scoring.  ~490 MB.  Not committed to git.
+  # Download from the GitHub release (see `download` below) and drop at
+  # the path below, OR change the path to wherever you keep it locally.
+  perceiver_charge_light_relation:
+    path: NewMLSection/runs/ndfull_run_distributed/checkpoint.pt
+    sha256: 38655cca2b50f2caa643ef572fb80c77332611eafd3a831215cbe0f117473ac5
+    required: true
+    download:
+      url: https://github.com/MadivB/v_alpha_test/releases/download/v0.1.0/perceiver_charge_light_relation_v_alpha_test.pt
+      command: |
+        mkdir -p NewMLSection/runs/ndfull_run_distributed
+        curl -L -o NewMLSection/runs/ndfull_run_distributed/checkpoint.pt \
+          https://github.com/MadivB/v_alpha_test/releases/download/v0.1.0/perceiver_charge_light_relation_v_alpha_test.pt
+
+  # Per-tick PMT pulse-shape template (length 1000, float32).  Tiny (~4 KB)
+  # and bundled in the repo at `assets/avg_pulse.npy`.
+  pulse_template:
+    path: assets/avg_pulse.npy
+    sha256: cf52a851ab5d44f8b4804995fd8d5bcc662904a4fd9b96f62d3fb38dc8af6a7b
+    required: true
+    bundled: true
+
+  # Per-channel light-waveform std predictor.  Optional -- if missing, the
+  # front stage uses a constant-std proxy (allow_variance_fallback=True).
+  variance_prediction:
+    path_candidates:
+      - NewMLSection/var_prediction/runs/var_run_perceiver_aligned_0001000_v2/best_model.pt
+      - NewMLSection/var_prediction/runs/var_run_perceiver_aligned_0001000_v2/checkpoint.pt
+    sha256: ""    # fill in once a release exists
+    required: false
+    download:
+      url: ""    # not yet available; pipeline runs without it
+      command: |
+        # When a variance prediction release is published it'll appear at:
+        #   https://github.com/MadivB/v_alpha_test/releases/...
+        # Drop it at one of the path_candidates above and re-run.
+
+# -------------------------------------------------------------------
+# Default input data location.  Override at the CLI with --files.
+
+input_data:
+  default_data_dir: /global/cfs/cdirs/dunepro/people/abooth/nd-production/output/MiniProdN5/run-ndlar-flow/MiniProdN5p1_NDComplex_FHC.flow.full.sanddrift/FLOW/0000000

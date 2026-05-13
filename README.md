@@ -2,48 +2,77 @@
 
 The v_alpha "test" pipeline. **End-to-end NDLAr charge-light matching**: front-stage track/shower placement, Phase 2 large-cluster scan, V2 light rescue (the `phase25_trial2_v_alpha_test` module), Phase 3 small-cluster matrix association — and a per-file `.pt` output with the schema documented in [`config.yaml`](config.yaml).
 
-This is intended to be the long-lived alpha entrypoint. Everything needed to reproduce a run lives in this folder *except* the two large model weight files (the perceiver charge-light relation and the variance prediction `.pt`), which are loaded from the existing repository locations via `M5p1.first_stage_matching.load_first_stage_models`.
+This is intended to be the long-lived alpha entrypoint. Everything needed to reproduce a run lives in this folder **except** the perceiver charge-light-relation weights (~490 MB), which are too big to commit to git and ship instead as a GitHub Release asset. The variance-prediction model is optional (the pipeline runs with a constant-std fallback when absent).
+
+## Quick start (any machine, any path)
+
+```bash
+git clone https://github.com/MadivB/v_alpha_test.git
+cd v_alpha_test
+
+# 1. Download the perceiver weights (~490 MB) into the path paths.yaml expects:
+mkdir -p NewMLSection/runs/ndfull_run_distributed
+curl -L -o NewMLSection/runs/ndfull_run_distributed/checkpoint.pt \
+  https://github.com/MadivB/v_alpha_test/releases/download/v0.1.0/perceiver_charge_light_relation_v_alpha_test.pt
+
+# 2. (optional) Edit paths.yaml if your assets/data live somewhere else.
+
+# 3. Verify the install:
+python scripts/check_install.py
+
+# 4. Run the single-file smoke test (needs a GPU node):
+bash scripts/run_v_alpha_test_pt_one_file.sh
+```
+
+If `check_install.py` reports a missing required asset, it tells you exactly which path it tried, where to download it from, and which YAML key to edit.
+
+## paths.yaml — single source of truth for external paths
+
+Every external file the pipeline loads is listed in [`paths.yaml`](paths.yaml):
+
+| asset | required? | default location |
+|---|---|---|
+| `perceiver_charge_light_relation` | **yes** | `NewMLSection/runs/ndfull_run_distributed/checkpoint.pt` (download from GitHub Release) |
+| `pulse_template` | **yes** | `assets/avg_pulse.npy` (bundled, ~4 KB) |
+| `variance_prediction` | optional | `NewMLSection/var_prediction/runs/.../best_model.pt` (constant-std fallback if missing) |
+| `input_data.default_data_dir` | optional | NERSC default; override via CLI or paths.yaml |
+
+Each `path:` can be absolute or repo-relative. `path_candidates:` lets you list multiple fallbacks.
+
+You can also point the resolver at a different YAML via `V_ALPHA_TEST_PATHS_YAML=/path/to/your.yaml`.
 
 ## Layout
 
 ```
 v_alpha_test/
-├── README.md                  # this file
-├── config.yaml                # paths + per-file .pt schema + field provenance
-├── M5p1/                      # symlinks/copies of the M5p1 modules used by the pipeline
-├── scripts/
-│   ├── aggregate_to_pt.py     # per-event NPZ shards -> per-file .pt
-│   ├── run_v_alpha_test_pt_parallel8.sh   # 8-worker GPU launcher (auto-aggregates)
-│   └── inspect_pt.py          # quick CLI to peek at a .pt
-└── output/                    # default landing pad for aggregated .pt files
+├── README.md                                    # this file
+├── paths.yaml                                   # USER-EDITABLE asset paths (perceiver, pulse, variance)
+├── config.yaml                                  # per-file .pt output schema + field provenance
+├── release.yaml                                 # release manifest (sha256s, asset URLs, distribution)
+├── assets/
+│   └── avg_pulse.npy                            # bundled pulse template (4 KB)
+├── M5p1/                                        # M5p1 python package (front stage + V2 + Phase 3 + resolver)
+│   └── first_stage_matching/
+│       └── asset_resolver.py                    # reads paths.yaml, validates, friendly errors
+├── NewMLSection/                                # perceiver model code (weights downloaded separately)
+└── scripts/
+    ├── check_install.py                         # validates paths.yaml; exits 1 on missing required assets
+    ├── aggregate_to_pt.py                       # per-event NPZ shards -> per-file .pt
+    ├── inspect_pt.py                            # peek at a per-file .pt
+    ├── run_v_alpha_test_pt_one_file.sh          # 8-worker single-file launcher (auto-aggregates)
+    └── run_v_alpha_test_pt_parallel8.sh         # 8-worker 10-file launcher (auto-aggregates)
 ```
 
-## Quick start (4 GPUs, ≤90 min, 10 files)
+The launcher scripts auto-detect the repo location from their own path — they work from any clone, no editing needed.
 
-```bash
-salloc -A dune -q interactive -C gpu --gpus-per-node=4 -N 1 -t 90 \
-  srun -N1 -n1 --gpus-per-node=4 \
-    /global/cfs/cdirs/dune/users/yuxuan/NDLAr-full/v_alpha_test/scripts/run_v_alpha_test_pt_parallel8.sh
-```
-
-The launcher:
-1. Spawns 8 python workers (2 per GPU) running `M5p1.phase25_trial2_v_alpha_test`.
-2. Each worker writes per-event `.npz` + `.json` shards.
-3. After all workers finish, `aggregate_to_pt.py` merges the shards into one `.pt` per source HDF5 with the vBeta3-style schema (see `config.yaml`).
-
-Outputs:
-- per-event shards: `$SHARDS_DIR/<basename>__ev<NNNN>.{json,npz}`
-- per-file pt:      `$PT_DIR/<basename>.v_alpha_test.pt`
-- summaries:        `v_alpha_test_summary.json`, `v_alpha_test_aggregator_summary.json`
-
-## Per-file .pt schema (vBeta3-compatible + new field)
+## Output: per-file `.pt` schema (vBeta3-compatible + new field)
 
 See [`config.yaml`](config.yaml) for the full schema. Highlights:
 
 | field | dtype | shape | filled by |
 |---|---|---|---|
 | `calib_hit_t0_reco` | float32 | `(n_calib_hits,)` | full pipeline (Front + Phase 2 + V2 + Phase 3); `hit_timestamps_post_phase3` scattered via `event.hit_refs` |
-| **`prompt_hit_t_cluster_id`** | **int16** | **`(n_calib_hits,)`** | **front-stage clustering label `labels_global` scattered via `event.hit_refs`** *(temporary placeholder for the eventual charge-light cluster id)* |
+| **`prompt_hit_t_cluster_id`** | **int16** | **`(n_calib_hits,)`** | front-stage `labels_global` re-labeled by every V2 spatial+light move (each move yields a brand-new id past the original cluster count) |
 | `n_calib_hits`, `n_assigned`, `n_unassigned` | int | scalar | aggregator |
 | `processed_event_ids`, `all_event_ids` | int64 | varies | aggregator |
 | `event_summaries`, `failed_events` | list[dict] | varies | aggregator |
@@ -51,33 +80,43 @@ See [`config.yaml`](config.yaml) for the full schema. Highlights:
 
 **Sentinels:** unassigned prompt hits have `calib_hit_t0_reco = -1.0` and `prompt_hit_t_cluster_id = -1`.
 
+## Inspect a result
+
+```bash
+python scripts/inspect_pt.py output/test_one_file/pt_outputs/*.v_alpha_test.pt
+```
+
 ## Manual aggregation
 
-If you ran the batch but didn't auto-aggregate (e.g. you killed the launcher early), run the aggregator separately:
+If you ran the batch but didn't auto-aggregate, run the aggregator separately:
 
 ```bash
-PY=/global/common/software/nersc/pe/conda-envs/26.1.0/python-3.13/nersc-python/bin/python
-$PY /global/cfs/cdirs/dune/users/yuxuan/NDLAr-full/v_alpha_test/scripts/aggregate_to_pt.py \
-    --shard-dir /pscratch/sd/y/yuxuan/light_rescue_test/valpha_runs/test10_v_alpha_test \
-    --output-dir /pscratch/sd/y/yuxuan/light_rescue_test/valpha_runs/test10_v_alpha_test/pt_outputs
+python scripts/aggregate_to_pt.py \
+    --shard-dir output/test_one_file \
+    --output-dir output/test_one_file/pt_outputs
 ```
 
-## Inspect one .pt
+## On NERSC
+
+The default paths in [`paths.yaml`](paths.yaml) and the launchers are NERSC-friendly out of the box. Run on a 4-GPU GPU-node interactive allocation:
 
 ```bash
-$PY /global/cfs/cdirs/dune/users/yuxuan/NDLAr-full/v_alpha_test/scripts/inspect_pt.py \
-    /pscratch/sd/y/yuxuan/light_rescue_test/valpha_runs/test10_v_alpha_test/pt_outputs/MiniProdN5p1_NDComplex_FHC.flow.full.sanddrift.0000001.FLOW.v_alpha_test.pt
+salloc -A dune -q interactive -C gpu --gpus-per-node=4 -N 1 -t 30 \
+  srun -N1 -n1 --gpus-per-node=4 \
+    bash scripts/run_v_alpha_test_pt_one_file.sh
 ```
 
-## Excluded from this folder (too large for github)
+For 10 files / ~130 events in ~30 min:
 
-- The perceiver charge-light relation model weights
-- The variance-prediction `.pt`
+```bash
+salloc -A dune -q interactive -C gpu --gpus-per-node=4 -N 1 -t 90 \
+  srun -N1 -n1 --gpus-per-node=4 \
+    bash scripts/run_v_alpha_test_pt_parallel8.sh
+```
 
-Both are loaded by `M5p1.first_stage_matching.load_first_stage_models` from their existing in-repo locations. The path is read from the front-stage config and is not modified by v_alpha_test.
+## Excluded from this folder (too large for git)
 
-## What changed vs valpha
+- The perceiver charge-light relation weights (`checkpoint.pt`, ~490 MB) — GitHub Release asset
+- The variance-prediction `.pt` (when produced) — GitHub Release asset, optional
 
-- vBeta3-compatible per-file `.pt` output schema (one .pt per source HDF5).
-- New `prompt_hit_t_cluster_id` field (int16) — currently filled with the front-stage `labels_global`; provenance documented in `config.yaml` so it's easy to swap in the charge-light cluster id later.
-- Aggregator reads per-event NPZ shards independently of the GPU run, so re-aggregation is cheap and re-runnable.
+Both are loaded by `M5p1.first_stage_matching.load_first_stage_models` using the paths from `paths.yaml`. Missing required assets trigger a friendly error with download instructions.

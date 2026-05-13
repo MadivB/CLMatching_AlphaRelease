@@ -8,14 +8,55 @@ import numpy as np
 from .paths import REPO_ROOT
 
 
-@dataclass(slots=True)
-class ModelConfig:
-    light_checkpoint: str = str(REPO_ROOT / "NewMLSection/runs/ndfull_run_distributed/checkpoint.pt")
-    pulse_template: str = "/global/cfs/cdirs/dune/users/yuxuan/interactLevel/clusteringStudy/dataDrivenLUTtable/MLApproach/CNNApproach/avg_pulse.npy"
-    variance_checkpoints: tuple[str, ...] = (
+def _resolve_perceiver_default() -> str:
+    """Resolve the perceiver-weight path from paths.yaml; fall back to the
+    legacy in-repo location if paths.yaml is absent or doesn't override it."""
+    try:
+        from .asset_resolver import resolve_asset
+        r = resolve_asset("perceiver_charge_light_relation")
+        if r.candidates:
+            return r.path or r.candidates[0]
+    except Exception:
+        pass
+    return str(REPO_ROOT / "NewMLSection/runs/ndfull_run_distributed/checkpoint.pt")
+
+
+def _resolve_pulse_template_default() -> str:
+    """Resolve the pulse template from paths.yaml; fall back to the bundled
+    copy at assets/avg_pulse.npy."""
+    try:
+        from .asset_resolver import resolve_asset
+        r = resolve_asset("pulse_template")
+        if r.candidates:
+            return r.path or r.candidates[0]
+    except Exception:
+        pass
+    bundled = REPO_ROOT / "assets" / "avg_pulse.npy"
+    if bundled.exists():
+        return str(bundled)
+    return "/global/cfs/cdirs/dune/users/yuxuan/interactLevel/clusteringStudy/dataDrivenLUTtable/MLApproach/CNNApproach/avg_pulse.npy"
+
+
+def _resolve_variance_default() -> tuple[str, ...]:
+    """Resolve variance checkpoint candidates from paths.yaml."""
+    try:
+        from .asset_resolver import resolve_asset
+        r = resolve_asset("variance_prediction")
+        if r.candidates:
+            return tuple(r.candidates)
+    except Exception:
+        pass
+    return (
         str(REPO_ROOT / "NewMLSection/var_prediction/runs/var_run_perceiver_aligned_0001000_v2/best_model.pt"),
         str(REPO_ROOT / "NewMLSection/var_prediction/runs/var_run_perceiver_aligned_0001000_v2/checkpoint.pt"),
     )
+
+
+@dataclass(slots=True)
+class ModelConfig:
+    light_checkpoint: str = field(default_factory=_resolve_perceiver_default)
+    pulse_template: str = field(default_factory=_resolve_pulse_template_default)
+    variance_checkpoints: tuple[str, ...] = field(default_factory=_resolve_variance_default)
     allow_variance_fallback: bool = True
     device: str = "auto"
 

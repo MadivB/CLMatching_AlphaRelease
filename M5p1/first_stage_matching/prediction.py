@@ -61,6 +61,15 @@ def load_first_stage_models(config: FirstStageConfig | None = None) -> ModelBund
     config = FirstStageConfig() if config is None else config
     device = resolve_device(config.model.device)
 
+    # Validate the required external assets first; produce a friendly
+    # multi-line error pointing at paths.yaml + download command if any
+    # are missing.  Variance prediction is opt-out so it's not in this list.
+    try:
+        from .asset_resolver import require_assets_or_explain
+        require_assets_or_explain(["perceiver_charge_light_relation", "pulse_template"])
+    except ImportError:
+        pass  # back-compat: paths.yaml infrastructure not present in this checkout
+
     light_model, light_meta = load_perceiver_model(config.model.light_checkpoint, device=device)
     waveform_template = np.load(config.model.pulse_template).astype(np.float32) / np.float32(999.0)
 
