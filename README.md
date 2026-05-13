@@ -7,24 +7,66 @@ This is intended to be the long-lived alpha entrypoint. Everything needed to rep
 ## Quick start (any machine, any path)
 
 ```bash
+# 1. Pick where you want the install to live, then clone.
+INSTALL_DIR=/path/to/where/you/want/it
+mkdir -p "$INSTALL_DIR" && cd "$INSTALL_DIR"
 git clone https://github.com/MadivB/v_alpha_test.git
 cd v_alpha_test
 
-# 1. Download the perceiver weights (~490 MB) into the path paths.yaml expects:
+# 2. Preflight check (no GPU needed): tells you exactly what's missing
+#    and how to fix it.
+python scripts/check_install.py
+#    Expected on a fresh clone: perceiver MISSING (required), pulse OK,
+#                               variance optional.  Exit code 1.
+
+# 3. Download the perceiver weights (~490 MB; ~30 s on a fast network)
+#    into the path paths.yaml expects:
 mkdir -p NewMLSection/runs/ndfull_run_distributed
 curl -L -o NewMLSection/runs/ndfull_run_distributed/checkpoint.pt \
   https://github.com/MadivB/v_alpha_test/releases/download/v0.1.0/perceiver_charge_light_relation_v_alpha_test.pt
 
-# 2. (optional) Edit paths.yaml if your assets/data live somewhere else.
+# 4. Verify the SHA matches release.yaml (paranoia check; recommended).
+sha256sum NewMLSection/runs/ndfull_run_distributed/checkpoint.pt
+#    Expected:
+#    38655cca2b50f2caa643ef572fb80c77332611eafd3a831215cbe0f117473ac5  ...
 
-# 3. Verify the install:
+# 5. Re-verify the install (should now be all green).
 python scripts/check_install.py
+#    Expected: "All required assets are present.", exit code 0.
 
-# 4. Run the single-file smoke test (needs a GPU node):
-bash scripts/run_v_alpha_test_pt_one_file.sh
+# 6. Optional: edit paths.yaml if any of your assets/data live somewhere
+#    other than the defaults.  paths.yaml is the single source of truth.
+
+# 7. Run the single-file smoke test on a GPU node (~6-10 min wall clock,
+#    8 workers across 4 GPUs, auto-aggregates per-event NPZ -> per-file .pt).
+salloc -A dune -q interactive -C gpu --gpus-per-node=4 -N 1 -t 30 \
+  srun -N1 -n1 --gpus-per-node=4 \
+    bash scripts/run_v_alpha_test_pt_one_file.sh
+
+# 8. Inspect the result.
+python scripts/inspect_pt.py output/test_one_file/pt_outputs/*.v_alpha_test.pt
 ```
 
-If `check_install.py` reports a missing required asset, it tells you exactly which path it tried, where to download it from, and which YAML key to edit.
+The launcher writes outputs to `output/test_one_file/` inside your clone (override with `OUT_DIR=...`).
+Expected coverage on the default test file: ~98.7% of prompt hits get a finite t0 in `calib_hit_t0_reco`.
+
+If `check_install.py` reports a missing required asset, it prints the exact path it tried, the download URL, the copy-pasteable download command, and the `paths.yaml` key to edit.
+
+### Watch progress (separate terminal)
+
+After the `salloc` lands, in another login shell:
+```bash
+cd "$INSTALL_DIR"/v_alpha_test    # same install dir as above
+tail -f output/test_one_file/parallel8_logs/worker*.log
+```
+
+### Alternative: 10-file production run (~30-50 min wall)
+
+```bash
+salloc -A dune -q interactive -C gpu --gpus-per-node=4 -N 1 -t 90 \
+  srun -N1 -n1 --gpus-per-node=4 \
+    bash scripts/run_v_alpha_test_pt_parallel8.sh
+```
 
 ## paths.yaml — single source of truth for external paths
 
