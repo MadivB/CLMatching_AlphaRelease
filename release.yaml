@@ -30,7 +30,7 @@ assets:
     file_type: pt
     size_mb: 489.8
     sha256: "38655cca2b50f2caa643ef572fb80c77332611eafd3a831215cbe0f117473ac5"
-    release_asset_url: https://github.com/MadivB/v_alpha_test/releases/download/v0.1.0/checkpoint.pt
+    release_asset_url: https://github.com/MadivB/CLMatching_AlphaRelease/releases/download/v0.1.0/checkpoint.pt
     consumed_by:
       module: M5p1.first_stage_matching.prediction
       function: load_first_stage_models

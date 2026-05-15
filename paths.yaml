@@ -28,11 +28,11 @@ assets:
     sha256: 38655cca2b50f2caa643ef572fb80c77332611eafd3a831215cbe0f117473ac5
     required: true
     download:
-      url: https://github.com/MadivB/v_alpha_test/releases/download/v0.1.0/checkpoint.pt
+      url: https://github.com/MadivB/CLMatching_AlphaRelease/releases/download/v0.1.0/checkpoint.pt
       command: |
         mkdir -p NewMLSection/runs/ndfull_run_distributed
         curl -L -o NewMLSection/runs/ndfull_run_distributed/checkpoint.pt \
-          https://github.com/MadivB/v_alpha_test/releases/download/v0.1.0/checkpoint.pt
+          https://github.com/MadivB/CLMatching_AlphaRelease/releases/download/v0.1.0/checkpoint.pt
 
   # Per-tick PMT pulse-shape template (length 1000, float32).  Tiny (~4 KB)
   # and bundled in the repo at `assets/avg_pulse.npy`.
@@ -54,7 +54,7 @@ assets:
       url: ""    # not yet available; pipeline runs without it
       command: |
         # When a variance prediction release is published it'll appear at:
-        #   https://github.com/MadivB/v_alpha_test/releases/...
+        #   https://github.com/MadivB/CLMatching_AlphaRelease/releases/...
         # Drop it at one of the path_candidates above and re-run.
 
 # -------------------------------------------------------------------

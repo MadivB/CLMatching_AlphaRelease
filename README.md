@@ -10,7 +10,7 @@ This is intended to be the long-lived alpha entrypoint. Everything needed to rep
 # 1. Pick where you want the install to live, then clone.
 INSTALL_DIR=/path/to/where/you/want/it
 mkdir -p "$INSTALL_DIR" && cd "$INSTALL_DIR"
-git clone https://github.com/MadivB/v_alpha_test.git
+git clone https://github.com/MadivB/CLMatching_AlphaRelease.git
 cd v_alpha_test
 
 # 2. Preflight check (no GPU needed): tells you exactly what's missing
@@ -23,7 +23,7 @@ python scripts/check_install.py
 #    into the path paths.yaml expects:
 mkdir -p NewMLSection/runs/ndfull_run_distributed
 curl -L -o NewMLSection/runs/ndfull_run_distributed/checkpoint.pt \
-  https://github.com/MadivB/v_alpha_test/releases/download/v0.1.0/checkpoint.pt
+  https://github.com/MadivB/CLMatching_AlphaRelease/releases/download/v0.1.0/checkpoint.pt
 
 # 4. Verify the SHA matches release.yaml (paranoia check; recommended).
 sha256sum NewMLSection/runs/ndfull_run_distributed/checkpoint.pt
