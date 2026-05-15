@@ -1,8 +1,8 @@
-# v_alpha_test
+# Charge Light Matching Alpha Release
 
-The v_alpha "test" pipeline. **End-to-end NDLAr charge-light matching**: front-stage track/shower placement, Phase 2 large-cluster scan, V2 light rescue (the `phase25_trial2_v_alpha_test` module), Phase 3 small-cluster matrix association — and a per-file `.pt` output with the schema documented in [`config.yaml`](config.yaml).
+The alpha release pipeline. **End-to-end NDLAr charge-light matching**: front-stage track/shower placement, Phase 2 large-cluster scan, V2 light rescue (the `phase25_trial2_v_alpha_test` module), Phase 3 small-cluster matrix association — and a per-file `.pt` output with the schema documented in [`config.yaml`](config.yaml).
 
-This is intended to be the long-lived alpha entrypoint. Everything needed to reproduce a run lives in this folder **except** the perceiver charge-light-relation weights (~490 MB), which are too big to commit to git and ship instead as a GitHub Release asset. The variance-prediction model is optional (the pipeline runs with a constant-std fallback when absent).
+This is intended to be the same version integrated into flow. Everything needed to reproduce a run lives in this folder **except** the perceiver charge-light-relation weights (~490 MB), which are too big to commit to git and ship instead as a GitHub Release asset. The variance-prediction model is optional (the pipeline runs with a constant-std fallback when absent).
 
 ## Quick start (any machine, any path)
 
@@ -37,11 +37,11 @@ python scripts/check_install.py
 # 6. Optional: edit paths.yaml if any of your assets/data live somewhere
 #    other than the defaults.  paths.yaml is the single source of truth.
 
-# 7. Run the single-file smoke test on a GPU node (~6-10 min wall clock,
+# 7. Run the single-file smoke test on a GPU node (assuming that you are on nersc) (~6-10 min wall clock,
 #    8 workers across 4 GPUs, auto-aggregates per-event NPZ -> per-file .pt).
 salloc -A dune -q interactive -C gpu --gpus-per-node=4 -N 1 -t 30 \
   srun -N1 -n1 --gpus-per-node=4 \
-    bash scripts/run_v_alpha_test_pt_one_file.sh
+    bash scripts/run_v_alpha_test_pt_one_file.sh 
 
 # 8. Inspect the result.
 python scripts/inspect_pt.py output/test_one_file/pt_outputs/*.v_alpha_test.pt
