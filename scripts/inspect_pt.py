@@ -20,6 +20,12 @@ def inspect(path: str) -> None:
     print(f"n_calib_hits       : {d.get('n_calib_hits')}")
     print(f"n_assigned         : {d.get('n_assigned')}")
     print(f"n_unassigned       : {d.get('n_unassigned')}")
+    if "n_calib_final_hits" in d:
+        n_cf = int(d.get("n_calib_final_hits", 0))
+        n_cfa = int(d.get("n_calib_final_assigned", 0))
+        print(f"n_calib_final_hits : {n_cf}")
+        print(f"n_calib_final_assigned : {n_cfa}  ({100*n_cfa/max(n_cf,1):.2f}%)")
+        print(f"n_calib_final_unassigned : {int(d.get('n_calib_final_unassigned', 0))}")
     print(f"events processed   : {len(d.get('processed_event_ids', []))}"
           f" of {len(d.get('all_event_ids', []))}")
     print(f"failed events      : {len(d.get('failed_events', []))}")

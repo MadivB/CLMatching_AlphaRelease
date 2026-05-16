@@ -111,16 +111,32 @@ The launcher scripts auto-detect the repo location from their own path — they 
 
 See [`config.yaml`](config.yaml) for the full schema. Highlights:
 
-| field | dtype | shape | filled by |
-|---|---|---|---|
-| `calib_hit_t0_reco` | float32 | `(n_calib_hits,)` | full pipeline (Front + Phase 2 + V2 + Phase 3); `hit_timestamps_post_phase3` scattered via `event.hit_refs` |
-| **`prompt_hit_t_cluster_id`** | **int16** | **`(n_calib_hits,)`** | front-stage `labels_global` re-labeled by every V2 spatial+light move (each move yields a brand-new id past the original cluster count) |
-| `n_calib_hits`, `n_assigned`, `n_unassigned` | int | scalar | aggregator |
-| `processed_event_ids`, `all_event_ids` | int64 | varies | aggregator |
-| `event_summaries`, `failed_events` | list[dict] | varies | aggregator |
-| `version`, `algorithm`, `input_file` | str | scalar | aggregator |
+**Per-prompt-hit fields** (size `n_calib_hits`):
 
-**Sentinels:** unassigned prompt hits have `calib_hit_t0_reco = -1.0` and `prompt_hit_t_cluster_id = -1`.
+| field | dtype | filled by |
+|---|---|---|
+| `calib_hit_t0_reco` | float32 | full pipeline (Front + Phase 2 + V2 + Phase 3); `hit_timestamps_post_phase3` scattered via `event.hit_refs` |
+| `prompt_hit_t_cluster_id` | int16 | front-stage `labels_global` re-labeled by every V2 spatial+light move (each move yields a brand-new id past the original cluster count) |
+
+**Per-merged-hit fields** (size `n_calib_final_hits`, vBeta3-compatible):
+
+| field | dtype | filled by |
+|---|---|---|
+| `calib_final_hit_t0_reco` | float32 | aggregator: `calib_hit_t0_reco[prompt_idx[i]]` where `prompt_idx = charge/calib_prompt_hits/ref/charge/calib_final_hits/ref[:, 0]` |
+| `calib_final_hit_cluster_id` | int16 | aggregator: same prompt-index lookup against `prompt_hit_t_cluster_id` |
+| `calib_final_hit_prompt_index` | int64 | aggregator: the column-0 ref above |
+
+**Counts + metadata:**
+
+| field | type | filled by |
+|---|---|---|
+| `n_calib_hits`, `n_assigned`, `n_unassigned` | int | aggregator |
+| `n_calib_final_hits`, `n_calib_final_assigned`, `n_calib_final_unassigned` | int | aggregator |
+| `processed_event_ids`, `all_event_ids` | int64 | aggregator |
+| `event_summaries`, `failed_events` | list[dict] | aggregator |
+| `version`, `algorithm`, `input_file`, `calib_final_hit_source` | str | aggregator |
+
+**Sentinels:** unassigned prompt and merged hits have `*_t0_reco = -1.0` and `*_cluster_id = -1`.
 
 ## Inspect a result
 

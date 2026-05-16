@@ -120,6 +120,74 @@ per_file_pt_schema:
       type: int
       description: n_calib_hits - n_assigned.
 
+    # ---- Per-merged-hit (calib_final_hits) -----------------------------
+    # These are the "physics hit" outputs downstream code consumes.
+    # Each calib_final_hit inherits its t0 and cluster id from a single
+    # source prompt hit, identified by column 0 of
+    #   charge/calib_prompt_hits/ref/charge/calib_final_hits/ref
+    # (matches vBeta3AllHits convention so the schemas are interoperable).
+
+    calib_final_hit_t0_reco:
+      type: torch.float32
+      shape: (n_calib_final_hits,)
+      sentinel: -1.0
+      filled_by:
+        stage: aggregator post-processing (scripts/aggregate_to_pt.py)
+        derivation: calib_hit_t0_reco[prompt_idx[i]] for each final hit i
+        prompt_idx_source: charge/calib_prompt_hits/ref/charge/calib_final_hits/ref[:, 0]
+      description: >-
+        Reconstructed t0 in matching ticks for every calib_final_hit
+        (merged hit) in the source HDF5.  Unassigned merged hits carry -1.
+
+    calib_final_hit_cluster_id:
+      type: torch.int16
+      shape: (n_calib_final_hits,)
+      sentinel: -1
+      filled_by:
+        stage: aggregator post-processing
+        derivation: prompt_hit_t_cluster_id[prompt_idx[i]] for each final hit i
+        prompt_idx_source: charge/calib_prompt_hits/ref/charge/calib_final_hits/ref[:, 0]
+      description: >-
+        Per-merged-hit cluster id; same provenance + sentinel rules as
+        prompt_hit_t_cluster_id.
+
+    calib_final_hit_prompt_index:
+      type: torch.int64
+      shape: (n_calib_final_hits,)
+      filled_by:
+        stage: aggregator post-processing
+        source: charge/calib_prompt_hits/ref/charge/calib_final_hits/ref[:, 0]
+      description: >-
+        Index into calib_prompt_hits (the source prompt-hit row) that
+        produced each calib_final_hit.  Useful to join the per-prompt
+        and per-merged tables.
+
+    calib_final_hit_source:
+      type: str
+      description: Free-text provenance string ("derived from calib_hit_t0_reco through ...").
+
+    calib_final_hit_t0_unassigned_value:
+      type: float
+      value: -1.0
+
+    calib_final_hit_cluster_id_unassigned_value:
+      type: int
+      value: -1
+
+    n_calib_final_hits:
+      type: int
+      description: Total number of calib_final_hits in the source HDF5.
+
+    n_calib_final_assigned:
+      type: int
+      description: Number of merged hits with a finite t0 in calib_final_hit_t0_reco.
+
+    n_calib_final_unassigned:
+      type: int
+      description: n_calib_final_hits - n_calib_final_assigned.
+
+    # ---- Event metadata ----------------------------------------------
+
     processed_event_ids:
       type: torch.int64
       shape: (n_events_processed,)

@@ -43,6 +43,28 @@ import torch
 T0_RECO_SENTINEL = -1.0       # float32, "no t0 assigned"
 CLUSTER_ID_SENTINEL = -1       # int16,   "no cluster"
 
+# vBeta3 convention: each calib_final_hit row maps to one source prompt-hit
+# via column 0 of this ref dataset.  Fallback: calib_final_hits/data['id'].
+_CALIB_FINAL_TO_PROMPT_REF = "charge/calib_prompt_hits/ref/charge/calib_final_hits/ref"
+
+
+def _calib_final_to_prompt_indices(h5: h5py.File) -> np.ndarray:
+    """Return one source calib_prompt_hits row index per calib_final_hits row.
+
+    Matches the vBeta3AllHits convention so the schemas are interoperable.
+    """
+    final_hits = h5["charge/calib_final_hits/data"]
+    n_final = int(final_hits.shape[0])
+    if _CALIB_FINAL_TO_PROMPT_REF in h5 and int(h5[_CALIB_FINAL_TO_PROMPT_REF].shape[0]) == n_final:
+        return np.asarray(h5[_CALIB_FINAL_TO_PROMPT_REF][:, 0], dtype=np.int64)
+    if "id" in final_hits.dtype.names:
+        return np.asarray(final_hits["id"], dtype=np.int64)
+    raise RuntimeError(
+        "Could not derive calib_final_hits -> calib_prompt_hits mapping. "
+        f"Missing or malformed {_CALIB_FINAL_TO_PROMPT_REF}, and "
+        "calib_final_hits/data has no 'id' field."
+    )
+
 
 # Per-prompt-hit fields produced by this aggregator.
 SCHEMA_VERSION = "v_alpha_test.1"
@@ -217,17 +239,63 @@ def _aggregate_one_file(
         })
 
     n_unassigned = int(n_calib_hits - n_assigned)
+
+    # ---- Derive merged (calib_final) hit fields ----
+    # vBeta3 convention: per-final-hit value = value of column-0 prompt hit
+    # from charge/calib_prompt_hits/ref/charge/calib_final_hits/ref.
+    final_t0 = np.full(0, T0_RECO_SENTINEL, dtype=np.float32)
+    final_cluster = np.full(0, CLUSTER_ID_SENTINEL, dtype=np.int16)
+    final_prompt_index = np.zeros(0, dtype=np.int64)
+    n_calib_final_hits = 0
+    n_calib_final_assigned = 0
+    final_source_note = ""
+    try:
+        with h5py.File(src_file, "r") as h:
+            prompt_idx = _calib_final_to_prompt_indices(h)
+            n_calib_final_hits = int(h["charge/calib_final_hits/data"].shape[0])
+        final_prompt_index = prompt_idx.astype(np.int64, copy=False)
+        final_t0 = np.full(n_calib_final_hits, T0_RECO_SENTINEL, dtype=np.float32)
+        final_cluster = np.full(n_calib_final_hits, CLUSTER_ID_SENTINEL, dtype=np.int16)
+        in_range = (prompt_idx >= 0) & (prompt_idx < n_calib_hits)
+        final_t0[in_range] = calib_hit_t0_reco[prompt_idx[in_range]]
+        final_cluster[in_range] = prompt_hit_t_cluster_id[prompt_idx[in_range]]
+        n_calib_final_assigned = int(
+            np.count_nonzero((final_t0 != T0_RECO_SENTINEL) & np.isfinite(final_t0) & (final_t0 >= 0))
+        )
+        final_source_note = (
+            "charge/calib_final_hits/data, derived from calib_hit_t0_reco and "
+            "prompt_hit_t_cluster_id through "
+            "charge/calib_prompt_hits/ref/charge/calib_final_hits/ref[:, 0]"
+        )
+    except Exception as exc:
+        failed_events.append({
+            "event_id": -1,
+            "error": f"final-hit derivation failed: {exc}",
+        })
+
     elapsed = float(time.perf_counter() - t0)
 
     out = {
         "version": SCHEMA_VERSION,
         "algorithm": ALGORITHM,
         "input_file": str(src_file),
+        # Per-prompt-hit (size = n_calib_hits)
         "calib_hit_t0_reco": torch.from_numpy(calib_hit_t0_reco),
         "prompt_hit_t_cluster_id": torch.from_numpy(prompt_hit_t_cluster_id),
         "n_calib_hits": int(n_calib_hits),
         "n_assigned": int(n_assigned),
         "n_unassigned": int(n_unassigned),
+        # Per-merged-hit (size = n_calib_final_hits)
+        "calib_final_hit_t0_reco": torch.from_numpy(final_t0),
+        "calib_final_hit_cluster_id": torch.from_numpy(final_cluster),
+        "calib_final_hit_prompt_index": torch.from_numpy(final_prompt_index),
+        "calib_final_hit_source": final_source_note,
+        "calib_final_hit_t0_unassigned_value": T0_RECO_SENTINEL,
+        "calib_final_hit_cluster_id_unassigned_value": CLUSTER_ID_SENTINEL,
+        "n_calib_final_hits": int(n_calib_final_hits),
+        "n_calib_final_assigned": int(n_calib_final_assigned),
+        "n_calib_final_unassigned": int(max(n_calib_final_hits - n_calib_final_assigned, 0)),
+        # Event metadata
         "processed_event_ids": torch.from_numpy(np.asarray(sorted(processed_event_ids), dtype=np.int64)),
         "all_event_ids": torch.from_numpy(all_event_ids),
         "event_summaries": event_summaries,
@@ -239,12 +307,19 @@ def _aggregate_one_file(
     out_path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(out, out_path)
     if verbose:
+        if n_calib_final_hits > 0:
+            final_str = (
+                f"  merged={n_calib_final_assigned}/{n_calib_final_hits}"
+                f" ({100.0*n_calib_final_assigned/max(n_calib_final_hits,1):.2f}%)"
+            )
+        else:
+            final_str = "  merged=skipped"
         print(
             f"  wrote {out_path.name}  "
             f"events={len(processed_event_ids)}  "
-            f"assigned={n_assigned}/{n_calib_hits}  "
-            f"({100.0*n_assigned/max(n_calib_hits,1):.2f}%)  "
-            f"elapsed={elapsed:.1f}s",
+            f"prompt={n_assigned}/{n_calib_hits}"
+            f" ({100.0*n_assigned/max(n_calib_hits,1):.2f}%)"
+            f"{final_str}  elapsed={elapsed:.1f}s",
             flush=True,
         )
     return {
@@ -254,6 +329,8 @@ def _aggregate_one_file(
         "n_event_shards": int(len(shard_npzs)),
         "n_assigned": int(n_assigned),
         "n_calib_hits": int(n_calib_hits),
+        "n_calib_final_hits": int(n_calib_final_hits),
+        "n_calib_final_assigned": int(n_calib_final_assigned),
         "elapsed_s": elapsed,
     }
 
