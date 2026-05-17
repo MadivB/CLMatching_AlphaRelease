@@ -13,8 +13,11 @@ mkdir -p "$PROD_DIR/logs"
 
 # Quick preflight: does the perceiver weight exist?  Use the repo's own
 # validator -- non-zero exit means missing required assets.
+# Use the same conda python the production pipeline uses (system python on
+# the login node is 3.6 and can't parse our type hints).
+PY=${PY:-/global/common/software/nersc/pe/conda-envs/26.1.0/python-3.13/nersc-python/bin/python}
 echo "Preflight: checking install ..."
-python "${SCRIPT_DIR}/check_install.py" || {
+"$PY" "${SCRIPT_DIR}/check_install.py" || {
     echo
     echo "ERROR: required assets missing.  Fix the above before submitting."
     exit 2
