@@ -22,11 +22,14 @@
 
 set -uo pipefail
 
-# Auto-detect repo root from this script's path so it works wherever you
-# put the clone, but allow override via REPO=.
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO=${REPO:-"$(cd "${SCRIPT_DIR}/.." && pwd)"}
-SCRIPT_PATH="${SCRIPT_DIR}/$(basename "${BASH_SOURCE[0]}")"
+# IMPORTANT: SLURM copies the sbatch script to /var/spool/slurmd/<jobid>/
+# on the compute node before running, so $BASH_SOURCE auto-detect resolves
+# to /var/spool/slurmd (= wrong REPO) and every launcher invocation fails
+# with rc=127.  Hardcode REPO + SCRIPT_PATH to absolute paths in the
+# user's filesystem so the script always finds the launcher.
+REPO=${REPO:-/global/cfs/cdirs/dune/users/yuxuan/NDLAr-full/CLMatching_AlphaRelease}
+SCRIPT_PATH=${SCRIPT_PATH:-${REPO}/scripts/sbatch_production_0000000.sh}
+SCRIPT_DIR="${REPO}/scripts"
 
 DATA_DIR=${DATA_DIR:-/global/cfs/cdirs/dunepro/people/abooth/nd-production/output/MiniProdN5/run-ndlar-flow/MiniProdN5p1_NDComplex_FHC.flow.full.sanddrift/FLOW/0000000}
 PROD_DIR=${PROD_DIR:-/pscratch/sd/y/yuxuan/CLMatching_AlphaRelease_prod/0000000}
