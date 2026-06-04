@@ -68,6 +68,26 @@ salloc -A dune -q interactive -C gpu --gpus-per-node=4 -N 1 -t 90 \
     bash scripts/run_v_alpha_test_pt_parallel8.sh
 ```
 
+## Three run modes
+
+The pipeline can be driven three ways, all sharing the same engine and output schema:
+
+| # | mode | script | when to use |
+|---|---|---|---|
+| 1 | **batch submission** | `scripts/submit_production_robust.sh [N]` | mass production; launches N preemption-robust SLURM chains that self-resubmit and cooperate via atomic file claims |
+| 2 | **interactive folder** | `scripts/run_interactive_forward_0000000.sh` | run inside an existing `salloc` GPU node; processes a whole folder forward, cooperating with any batch chains |
+| 3 | **single file** | `scripts/process_one_flow_file.sh <flow.hdf5> [out_dir]` | run inside an existing `salloc` GPU node; process exactly one FLOW file |
+
+All three use 8 workers (2 per GPU × 4 GPUs) and auto-aggregate per-event NPZ shards into one per-file `.pt`.
+
+Example for mode 3 (already on an interactive GPU node):
+
+```bash
+bash scripts/process_one_flow_file.sh \
+  /global/cfs/cdirs/dunepro/people/abooth/nd-production/output/MiniProdN5/run-ndlar-flow/MiniProdN5p1_NDComplex_FHC.flow.full.sanddrift/FLOW/0000000/MiniProdN5p1_NDComplex_FHC.flow.full.sanddrift.0000123.FLOW.hdf5
+# -> output/single/<basename>/pt_outputs/<basename>.v_alpha_test.pt
+```
+
 ## paths.yaml — single source of truth for external paths
 
 Every external file the pipeline loads is listed in [`paths.yaml`](paths.yaml):
