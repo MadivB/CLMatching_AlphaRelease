@@ -47,6 +47,13 @@ CLUSTER_ID_SENTINEL = -1       # int16,   "no cluster"
 # via column 0 of this ref dataset.  Fallback: calib_final_hits/data['id'].
 _CALIB_FINAL_TO_PROMPT_REF = "charge/calib_prompt_hits/ref/charge/calib_final_hits/ref"
 
+# Output mode (auto-detected per source file from its calib_prompt_hits dtype):
+#   "A" = flow file reserves t_0 and t_cluster_id fields -> write back in-place.
+#   "B" = older flow file without those fields -> write .pt under QLmatchingvAlpha/.
+MODE_A_REQUIRED_FIELDS = ("t_0", "t_cluster_id")
+_PROMPT_DSET = "charge/calib_prompt_hits/data"
+_FINAL_DSET = "charge/calib_final_hits/data"
+
 
 def _calib_final_to_prompt_indices(h5: h5py.File) -> np.ndarray:
     """Return one source calib_prompt_hits row index per calib_final_hits row.
@@ -64,6 +71,114 @@ def _calib_final_to_prompt_indices(h5: h5py.File) -> np.ndarray:
         f"Missing or malformed {_CALIB_FINAL_TO_PROMPT_REF}, and "
         "calib_final_hits/data has no 'id' field."
     )
+
+
+def _detect_mode(src_file: str) -> str:
+    """Return "A" if the flow file reserves t_0 and t_cluster_id on BOTH
+    calib_prompt_hits and calib_final_hits, else "B"."""
+    try:
+        with h5py.File(src_file, "r") as h:
+            for path in (_PROMPT_DSET, _FINAL_DSET):
+                if path not in h:
+                    return "B"
+                names = h[path].dtype.names or ()
+                if not all(f in names for f in MODE_A_REQUIRED_FIELDS):
+                    return "B"
+        return "A"
+    except Exception:
+        return "B"
+
+
+def _clip_float_to_int16(arr: np.ndarray, label: str) -> tuple[np.ndarray, int, int, int]:
+    """Cast float t0 (ns) array to int16 with clipping.
+
+    Returns (clipped_i2, n_overflow_high, n_overflow_low, max_seen_abs).
+    The sentinel -1.0 fits in i2 untouched.
+    """
+    lo, hi = np.iinfo(np.int16).min, np.iinfo(np.int16).max
+    n_high = int((arr > hi).sum())
+    n_low = int((arr < lo).sum())
+    max_abs = int(np.max(np.abs(arr))) if arr.size else 0
+    return np.clip(arr, lo, hi).astype(np.int16), n_high, n_low, max_abs
+
+
+def _write_qlmatching_to_hdf5(
+    src_file: str,
+    prompt_t0_f32_ns: np.ndarray,
+    prompt_cluster_id_i2: np.ndarray,
+    final_t0_f32_ns: np.ndarray,
+    final_cluster_id_i2: np.ndarray,
+    *,
+    verbose: bool = True,
+) -> dict[str, Any]:
+    """Write the QL matching outputs into the source flow file in-place.
+
+    For each of calib_prompt_hits and calib_final_hits:
+      * Read existing dataset.
+      * Emit a WARNING if t_0 or t_cluster_id had non-default (non-zero) values.
+      * Overwrite t_0 (clipped to int16 ns range) and t_cluster_id.
+      * Write the dataset back.
+
+    Uses read-modify-write on the full compound dataset (a couple hundred MB
+    per dataset typically) since h5py does not natively support partial-field
+    writes on compound datasets across all versions.
+    """
+    info: dict[str, Any] = {
+        "prompt_overwritten_nonzero": {},
+        "final_overwritten_nonzero": {},
+        "prompt_t0_overflow_high": 0,
+        "prompt_t0_overflow_low": 0,
+        "prompt_t0_max_abs_ns": 0,
+        "final_t0_overflow_high": 0,
+        "final_t0_overflow_low": 0,
+        "final_t0_max_abs_ns": 0,
+    }
+
+    pt0_i2, p_oh, p_ol, p_max = _clip_float_to_int16(prompt_t0_f32_ns, "prompt.t_0")
+    ft0_i2, f_oh, f_ol, f_max = _clip_float_to_int16(final_t0_f32_ns, "final.t_0")
+    info["prompt_t0_overflow_high"] = p_oh
+    info["prompt_t0_overflow_low"] = p_ol
+    info["prompt_t0_max_abs_ns"] = p_max
+    info["final_t0_overflow_high"] = f_oh
+    info["final_t0_overflow_low"] = f_ol
+    info["final_t0_max_abs_ns"] = f_max
+
+    targets = (
+        (_PROMPT_DSET, pt0_i2, prompt_cluster_id_i2, "prompt_overwritten_nonzero"),
+        (_FINAL_DSET, ft0_i2, final_cluster_id_i2, "final_overwritten_nonzero"),
+    )
+    with h5py.File(src_file, "r+") as h:
+        for dset_path, t0_arr, cluster_arr, info_key in targets:
+            dset = h[dset_path]
+            existing = dset[:]
+            for field in MODE_A_REQUIRED_FIELDS:
+                nz = int((existing[field] != 0).sum())
+                if nz > 0:
+                    info[info_key][field] = nz
+                    if verbose:
+                        print(
+                            f"  WARNING: {dset_path}[{field}] had {nz} non-zero "
+                            f"entries before QL matching ran; overwriting all values.",
+                            flush=True,
+                        )
+            existing["t_0"] = t0_arr
+            existing["t_cluster_id"] = cluster_arr
+            dset[:] = existing
+
+    if verbose:
+        # Surface overflow noise so the user notices if i2 is squeezing real values.
+        for label, oh, ol, mx in (
+            ("prompt", p_oh, p_ol, p_max),
+            ("final", f_oh, f_ol, f_max),
+        ):
+            if oh + ol > 0:
+                print(
+                    f"  WARNING: {label} t_0 int16 overflow: {oh} hits >32767, "
+                    f"{ol} hits <-32768 (max |t_0|={mx} ns); clipped. "
+                    "Consider widening calib_prompt_hits 't_0' from i2 to i4.",
+                    flush=True,
+                )
+    return info
 
 
 # Per-prompt-hit fields produced by this aggregator.
@@ -121,12 +236,6 @@ def _aggregate_one_file(
 ) -> dict[str, Any]:
     t0 = time.perf_counter()
     out_path = output_dir / f"{file_basename}.v_alpha_test.pt"
-    if out_path.exists() and not overwrite:
-        return {
-            "file_basename": file_basename,
-            "status": "skipped_existing",
-            "out_path": str(out_path),
-        }
 
     # Sibling JSONs carry the absolute source-file path.
     json_paths = [Path(str(p).replace(".npz", ".json")) for p in shard_npzs]
@@ -140,6 +249,19 @@ def _aggregate_one_file(
             "status": "no_source_file",
             "out_path": None,
             "n_event_shards": len(shard_npzs),
+        }
+
+    mode = _detect_mode(src_file)
+
+    # Mode B (legacy .pt output) honors the skip-if-exists guard. In Mode A
+    # we always overwrite the HDF5 fields (the user opted in for this behavior),
+    # so the .pt existence check is not meaningful.
+    if mode == "B" and out_path.exists() and not overwrite:
+        return {
+            "file_basename": file_basename,
+            "status": "skipped_existing",
+            "mode": mode,
+            "out_path": str(out_path),
         }
 
     # Get the file-global prompt-hit count + processed event ids from the h5.
@@ -273,6 +395,51 @@ def _aggregate_one_file(
             "error": f"final-hit derivation failed: {exc}",
         })
 
+    # Common progress string used in both modes.
+    def _progress_str(elapsed_s: float, dest_label: str) -> str:
+        if n_calib_final_hits > 0:
+            final_str = (
+                f"  merged={n_calib_final_assigned}/{n_calib_final_hits}"
+                f" ({100.0*n_calib_final_assigned/max(n_calib_final_hits,1):.2f}%)"
+            )
+        else:
+            final_str = "  merged=skipped"
+        return (
+            f"  {dest_label}  "
+            f"events={len(processed_event_ids)}  "
+            f"prompt={n_assigned}/{n_calib_hits}"
+            f" ({100.0*n_assigned/max(n_calib_hits,1):.2f}%)"
+            f"{final_str}  elapsed={elapsed_s:.1f}s"
+        )
+
+    if mode == "A":
+        # Write QL matching outputs into the source flow file in-place.
+        hdf5_info = _write_qlmatching_to_hdf5(
+            src_file,
+            calib_hit_t0_reco,
+            prompt_hit_t_cluster_id,
+            final_t0,
+            final_cluster,
+            verbose=verbose,
+        )
+        elapsed = float(time.perf_counter() - t0)
+        if verbose:
+            print(_progress_str(elapsed, f"updated HDF5 in-place: {src_file}"), flush=True)
+        return {
+            "file_basename": file_basename,
+            "status": "ok",
+            "mode": mode,
+            "out_path": str(src_file),
+            "n_event_shards": int(len(shard_npzs)),
+            "n_assigned": int(n_assigned),
+            "n_calib_hits": int(n_calib_hits),
+            "n_calib_final_hits": int(n_calib_final_hits),
+            "n_calib_final_assigned": int(n_calib_final_assigned),
+            "elapsed_s": elapsed,
+            "hdf5_writeback": hdf5_info,
+        }
+
+    # Mode B: write the legacy .pt output.
     elapsed = float(time.perf_counter() - t0)
 
     out = {
@@ -307,24 +474,11 @@ def _aggregate_one_file(
     out_path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(out, out_path)
     if verbose:
-        if n_calib_final_hits > 0:
-            final_str = (
-                f"  merged={n_calib_final_assigned}/{n_calib_final_hits}"
-                f" ({100.0*n_calib_final_assigned/max(n_calib_final_hits,1):.2f}%)"
-            )
-        else:
-            final_str = "  merged=skipped"
-        print(
-            f"  wrote {out_path.name}  "
-            f"events={len(processed_event_ids)}  "
-            f"prompt={n_assigned}/{n_calib_hits}"
-            f" ({100.0*n_assigned/max(n_calib_hits,1):.2f}%)"
-            f"{final_str}  elapsed={elapsed:.1f}s",
-            flush=True,
-        )
+        print(_progress_str(elapsed, f"wrote {out_path.name}"), flush=True)
     return {
         "file_basename": file_basename,
         "status": "ok",
+        "mode": mode,
         "out_path": str(out_path),
         "n_event_shards": int(len(shard_npzs)),
         "n_assigned": int(n_assigned),

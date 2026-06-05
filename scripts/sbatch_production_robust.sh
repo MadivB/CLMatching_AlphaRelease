@@ -24,6 +24,13 @@
 #
 # Launch several of these at once (see submit_production_robust.sh) to finish
 # faster -- they cooperate through the shared pt_outputs/ + atomic claims.
+#
+# NOTE: this batch script currently assumes Mode B output (.pt files). New
+# flow files whose calib_prompt_hits dtype reserves t_0/t_cluster_id are
+# processed by process_one_flow_file.sh in Mode A (in-place HDF5 writeback)
+# instead.  TODO: add Mode A support to the batch path -- replace the
+# `[[ -f .../*.v_alpha_test.pt ]]` success/skip checks with a helper that
+# also recognizes a populated-in-place HDF5 as "done".
 
 set -uo pipefail
 

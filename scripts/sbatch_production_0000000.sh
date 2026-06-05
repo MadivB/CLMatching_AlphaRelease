@@ -19,6 +19,11 @@
 # - Auto re-submits itself at the end so the chain keeps going until done.
 # - Trap on SIGTERM/SIGUSR1 (preempt warning): finish current file, then exit
 #   cleanly and re-submit.
+#
+# NOTE: this batch script currently assumes Mode B output (.pt files). New
+# flow files whose calib_prompt_hits dtype reserves t_0/t_cluster_id are
+# processed by process_one_flow_file.sh in Mode A (in-place HDF5 writeback)
+# instead.  TODO: add Mode A support to the batch path.
 
 set -uo pipefail
 
