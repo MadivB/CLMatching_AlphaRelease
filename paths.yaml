@@ -57,8 +57,47 @@ assets:
         #   https://github.com/MadivB/CLMatching_AlphaRelease/releases/...
         # Drop it at one of the path_candidates above and re-run.
 
+  # ---------------- 2x2 detector assets ----------------
+  # All four are SMALL (3.5-6 MB) and BUNDLED in-repo under TwoByTwo/, so the
+  # 2x2 workflows are grab-and-run with no separate download.  The 2x2 worker
+  # (TwoByTwo/run_2x2_worker.py) resolves them automatically from these in-repo
+  # locations; you only need to touch these if you relocate the models.
+
+  # 2x2 charge->light perceiver trained on SIMULATION (run_2x2_sim.sh).
+  perceiver_2x2_sim:
+    path: TwoByTwo/perceiver/runs/2x2_run/best_model.pt
+    sha256: ffe910d5a3cce7c2828ca4146760f2619d6216f93f8ffae3c884667ce0b856fd
+    required: true
+    bundled: true
+
+  # 2x2 charge->light perceiver trained on real DATA (run_2x2_data.sh).
+  perceiver_2x2_data:
+    path: TwoByTwo/perceiver/runs/2x2_data_run/best_model.pt
+    sha256: 6f7a9eea30d57d043cf8c626e4fd5c601b32bd5fb6bd9ee9471ab8600c389acb
+    required: true
+    bundled: true
+
+  # 2x2 PMT pulse-shape template (length 1000, float32).  Identical bytes to the
+  # ND assets/avg_pulse.npy, kept here so TwoByTwo/ is self-contained.
+  pulse_template_2x2:
+    path: TwoByTwo/assets/avg_pulse_2x2.npy
+    sha256: cf52a851ab5d44f8b4804995fd8d5bcc662904a4fd9b96f62d3fb38dc8af6a7b
+    required: true
+    bundled: true
+
+  # 2x2 light-waveform variance predictor.  OPTIONAL: only the v2.0 algorithm
+  # (region-grow + tiebreaker) uses it; v1.0 (default, error-matrix) does not.
+  variance_2x2_prediction:
+    path: TwoByTwo/var_model/var_model_2x2.pt
+    sha256: b572c71f122a1f0bdde9c48e590760c12161ee57edf548c3b3ec8e49b971f2b8
+    required: false
+    bundled: true
+
 # -------------------------------------------------------------------
-# Default input data location.  Override at the CLI with --files.
+# Default input data locations.  Override at the CLI with --files / FILE=.
 
 input_data:
   default_data_dir: /global/cfs/cdirs/dunepro/people/abooth/nd-production/output/MiniProdN5/run-ndlar-flow/MiniProdN5p1_NDComplex_FHC.flow.full.sanddrift/FLOW/0000000
+  # 2x2 simulation (MiniRun6.4) and real beam-data reflow folders.
+  default_data_dir_2x2_sim: /global/cfs/cdirs/dune/www/data/2x2/simulation/productions/MiniRun6.4_1E19_RHC/MiniRun6.4_1E19_RHC.flow/FLOW/0000000
+  default_data_dir_2x2_data: /global/cfs/cdirs/dune/www/data/2x2/reflows/v10/flow/beam/july10_2024/nominal_hv

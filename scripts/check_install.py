@@ -38,7 +38,13 @@ def main() -> int:
     print(f"paths.yaml: {yaml_path}  (exists={yaml_path.exists()})")
     print()
 
-    asset_names = ["perceiver_charge_light_relation", "pulse_template", "variance_prediction"]
+    asset_names = [
+        # ND-LAr
+        "perceiver_charge_light_relation", "pulse_template", "variance_prediction",
+        # 2x2 (bundled in-repo; should always resolve OK on a fresh clone)
+        "perceiver_2x2_sim", "perceiver_2x2_data", "pulse_template_2x2",
+        "variance_2x2_prediction",
+    ]
     width = max(len(n) for n in asset_names)
 
     print("Asset status:")

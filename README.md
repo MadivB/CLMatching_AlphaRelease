@@ -1,8 +1,66 @@
 # Charge Light Matching Alpha Release
 
-The alpha release pipeline. **End-to-end NDLAr charge-light matching**: front-stage track/shower placement, Phase 2 large-cluster scan, V2 light rescue (the `phase25_trial2_v_alpha_test` module), Phase 3 small-cluster matrix association — and a per-file `.pt` output with the schema documented in [`config.yaml`](config.yaml).
+The alpha release pipeline for DUNE charge-light matching, covering **two detectors** (ND-LAr and the 2x2 demonstrator) and **simulation + data**.
 
-This is intended to be the same version integrated into flow. Everything needed to reproduce a run lives in this folder **except** the perceiver charge-light-relation weights (~490 MB), which are too big to commit to git and ship instead as a GitHub Release asset. The variance-prediction model is optional (the pipeline runs with a constant-std fallback when absent).
+* **ND-LAr** — end-to-end charge-light matching: front-stage track/shower placement, Phase 2 large-cluster scan, V2 light rescue (the `phase25_trial2_v_alpha_test` module), Phase 3 small-cluster matrix association. Perceiver weights (~490 MB) ship as a GitHub Release asset; variance prediction is optional (constant-std fallback). This is the version integrated into flow.
+* **2x2** — a port of the same algorithm to the 2x2 geometry/light system, living under [`TwoByTwo/`](TwoByTwo/), with its own perceiver (sim **and** data) and matcher. All 2x2 models are **small (~3.5–6 MB) and committed in-repo**, so the 2x2 workflows are grab-and-run with no separate download.
+
+Both detectors emit the **same per-file `.pt` schema** (`calib_hit_t0_reco` etc., documented in [`config.yaml`](config.yaml)).
+
+## Four workflows (sim/data × ND/2x2)
+
+There are four `scripts/run_<det>_<kind>.sh` entry points. Three are runnable today; ND-data has no algorithm yet and is an intentionally-empty placeholder.
+
+| workflow | script | status | models |
+|---|---|---|---|
+| ND simulation | `scripts/run_nd_sim.sh` | ✅ runnable | perceiver = Release asset (download once) |
+| ND data | `scripts/run_nd_data.sh` | ⬜ empty placeholder (no ND-data pipeline yet) | — |
+| 2x2 simulation | `scripts/run_2x2_sim.sh` | ✅ runnable | bundled in-repo |
+| 2x2 data | `scripts/run_2x2_data.sh` | ✅ runnable | bundled in-repo |
+
+### 2x2 algorithm versions (`VERSION=`)
+
+The **default is the error-matrix formulation** — the validated, conservative baseline. A newer region-grow method also ships, selectable per-run, but is **not** the default:
+
+| `VERSION` | name | what it does |
+|---|---|---|
+| `v1.0` *(default)* | **error-matrix** | greedy per-TPC brightest-first small-cluster association, unit-variance χ² (the ND vAlpha formulation). |
+| `v2.0` | **region-grow + tiebreaker** | adds cluster-guided spatial region-growing (confident light-matched clusters propagate t0 to neighbours; tuned conf_cos=0.55, light_margin=0.04) plus a learned-variance tiebreaker for ambiguous t0 candidates. Higher efficiency on the sim validation set (~+0.7 pp overall); the variance tiebreaker itself is roughly neutral. |
+
+```bash
+bash scripts/run_2x2_sim.sh                 # v1.0 error-matrix (default)
+VERSION=v2.0 bash scripts/run_2x2_sim.sh    # opt into region-grow
+```
+
+## 2x2 quick start (grab-and-run)
+
+```bash
+git clone https://github.com/MadivB/CLMatching_AlphaRelease.git
+cd CLMatching_AlphaRelease
+python scripts/check_install.py             # 2x2 assets are bundled -> all OK, no download
+
+# On a 4-GPU interactive node (8 workers, auto-aggregates per-event -> per-file .pt):
+salloc -A dune -q interactive -C gpu --gpus-per-node=4 -N 1 -t 30 \
+  srun -N1 -n1 --gpus-per-node=4 bash scripts/run_2x2_sim.sh      # or run_2x2_data.sh
+
+# Result (per input FLOW file):
+#   output/2x2_sim_v1.0/pt_outputs/<basename>.qlmatch2x2.pt
+```
+
+Process a specific file (sim or data) by passing it positionally or via `FILE=`:
+
+```bash
+bash scripts/run_2x2_sim.sh  /path/to/MiniRun6.4_1E19_RHC.flow.0000123.FLOW.hdf5
+FILE=/path/to/packet-XXXX.FLOW.hdf5 bash scripts/run_2x2_data.sh
+```
+
+The 2x2 layout (matcher + perceiver + bundled models + driver) lives under [`TwoByTwo/`](TwoByTwo/); see [`TwoByTwo/README_2x2.md`](TwoByTwo/README_2x2.md) for the package internals.
+
+---
+
+## ND-LAr (the original alpha release)
+
+Everything below documents the ND-LAr workflow. Its perceiver weights (~490 MB) are too big to commit to git and ship instead as a GitHub Release asset. The variance-prediction model is optional (the pipeline runs with a constant-std fallback when absent).
 
 ## Quick start (any machine, any path)
 

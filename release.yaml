@@ -93,6 +93,65 @@ assets:
       then update `FirstStageConfig.model.pulse_template` to point at
       that relative path so the install is self-contained.
 
+  # ======================= 2x2 detector assets =======================
+  # All four are small and committed directly to git (distribution: bundle),
+  # so the 2x2 sim/data workflows are grab-and-run with no separate download.
+  # Consumed by TwoByTwo/run_2x2_worker.py via TwoByTwo/matcher/light_model_2x2.py.
+
+  perceiver_2x2_sim:
+    role: |
+      2x2 charge->light perceiver (HybridPerceiver3D, 32x128x64 voxels, 48 light
+      channels) trained on MiniRun6.4 SIMULATION.  Drives run_2x2_sim.sh.
+    relative_to_repo: TwoByTwo/perceiver/runs/2x2_run/best_model.pt
+    file_type: pt
+    size_mb: 3.5
+    sha256: "ffe910d5a3cce7c2828ca4146760f2619d6216f93f8ffae3c884667ce0b856fd"
+    consumed_by:
+      module: TwoByTwo.matcher.light_model_2x2
+      function: load_light_model
+      config_field: light_model_2x2.DEFAULT_SIM_CKPT
+    distribution: bundle
+
+  perceiver_2x2_data:
+    role: |
+      2x2 charge->light perceiver trained on real 2x2 beam DATA.  Drives
+      run_2x2_data.sh.  Same architecture as the sim model.
+    relative_to_repo: TwoByTwo/perceiver/runs/2x2_data_run/best_model.pt
+    file_type: pt
+    size_mb: 3.5
+    sha256: "6f7a9eea30d57d043cf8c626e4fd5c601b32bd5fb6bd9ee9471ab8600c389acb"
+    consumed_by:
+      module: TwoByTwo.matcher.light_model_2x2
+      function: load_light_model
+      config_field: light_model_2x2.DEFAULT_DATA_CKPT
+    distribution: bundle
+
+  pulse_template_2x2:
+    role: |
+      2x2 PMT pulse-shape template (length 1000, float32).  Byte-identical to
+      the ND assets/avg_pulse.npy; kept under TwoByTwo/ for self-containment.
+    relative_to_repo: TwoByTwo/assets/avg_pulse_2x2.npy
+    file_type: npy
+    size_mb: 0.004
+    sha256: "cf52a851ab5d44f8b4804995fd8d5bcc662904a4fd9b96f62d3fb38dc8af6a7b"
+    distribution: bundle
+
+  variance_2x2_prediction:
+    role: |
+      2x2 light-waveform two-sided variance predictor (Conformer, 48ch).
+      OPTIONAL: used ONLY by the v2.0 algorithm (region-grow + tiebreaker) to
+      arbitrate ambiguous t0 candidates.  v1.0 (default, error-matrix) never
+      loads it.  Pull-width 1.03 on the 2x2 sim validation set.
+    relative_to_repo: TwoByTwo/var_model/var_model_2x2.pt
+    file_type: pt
+    size_mb: 6.0
+    sha256: "b572c71f122a1f0bdde9c48e590760c12161ee57edf548c3b3ec8e49b971f2b8"
+    consumed_by:
+      module: TwoByTwo.run_2x2_worker
+      function: _build_var_wrapper
+      config_field: run_2x2_worker (--version v2.0 only)
+    distribution: bundle
+
 # ---------------------------------------------------------------------------
 # Input data (HDF5 files; not bundled, used for tests and demos).
 

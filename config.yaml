@@ -13,6 +13,20 @@ algorithm: |
   per-file .pt by aggregate_to_pt.py.
 
 # ---------------------------------------------------------------------------
+# 2x2 detector variant (see TwoByTwo/ and README "Four workflows").
+#
+# The 2x2 sim/data workflows (TwoByTwo/run_2x2_worker.py + aggregate_2x2_to_pt.py)
+# emit the SAME per-file .pt schema documented below -- calib_hit_t0_reco /
+# prompt_hit_t_cluster_id (per prompt hit) and calib_final_hit_t0_reco /
+# calib_final_hit_cluster_id (per merged hit), scattered/derived identically --
+# with two differences:
+#   * version  = "qlmatch2x2.1"   (vs "v_alpha_test.1")
+#   * an extra top-level field  detector = "2x2"
+#   * filename = <basename>.qlmatch2x2.pt
+# Algorithm field records the version run: v1.0 (default, error-matrix greedy
+# unit-variance association) or v2.0 (region-grow + learned-variance tiebreaker).
+
+# ---------------------------------------------------------------------------
 # Paths.
 
 paths:

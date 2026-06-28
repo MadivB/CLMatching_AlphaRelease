@@ -4,3 +4,10 @@ output/
 *.pt
 *.pyc
 .DS_Store
+
+# 2x2 models are small (~3.7 MB each, 6.3 MB variance) and shipped in-repo so the
+# 2x2 workflows are grab-and-run with no separate download (unlike the 490 MB ND
+# perceiver, which stays a Release asset).  Keep these committed despite *.pt above.
+!TwoByTwo/perceiver/runs/2x2_run/best_model.pt
+!TwoByTwo/perceiver/runs/2x2_data_run/best_model.pt
+!TwoByTwo/var_model/var_model_2x2.pt
