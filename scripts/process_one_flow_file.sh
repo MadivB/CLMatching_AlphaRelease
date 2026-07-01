@@ -104,9 +104,12 @@ echo "================================================================"
 }
 
 # ---- Run the canonical 8-worker engine on this single file (auto-aggregates) ----
+# Use `|| rc=$?` so the launcher's exit code is captured without triggering the
+# outer `set -e`. Mode A vs Mode B success is judged below by inspecting the
+# actual HDF5 (Mode A) or the produced .pt (Mode B), not by trusting rc alone.
+rc=0
 OUT_DIR="$OUT_DIR" PT_DIR="$PT_DIR" LOG_DIR="${OUT_DIR}/worker_logs" \
-    bash "$LAUNCHER" "$FILE"
-rc=$?
+    bash "$LAUNCHER" "$FILE" || rc=$?
 
 # ---- Report result ----
 echo "================================================================"

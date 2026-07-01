@@ -106,7 +106,9 @@ else
     fi
     $PY "${HERE}/scripts/aggregate_to_pt.py" "${AGG_ARGS[@]}" 2>&1 | tee -a "${LOG_DIR}/aggregate.log"
     echo "----- aggregator done -----"
-    ls -la "$PT_DIR"/*.v_alpha_test.pt 2>&1 | head -20
+    # Mode A files do not produce a .pt; suppress the failure so we do not
+    # trip `set -o pipefail` and mislead callers into thinking the run failed.
+    ls -la "$PT_DIR"/*.v_alpha_test.pt 2>/dev/null | head -20 || true
 fi
 
 exit $FAIL
