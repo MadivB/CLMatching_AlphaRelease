@@ -401,6 +401,7 @@ def process_one_event_optimized(
     out_dir: Path,
     verbose: bool = False,
     save_arrays: bool = True,
+    postpass: str = "none",
 ) -> EventReport:
     t_start = time.perf_counter()
     file_basename = Path(data_file).stem
@@ -517,6 +518,38 @@ def process_one_event_optimized(
                 hit_timestamps=ns["hit_timestamps"],
                 stage_name="Phase 3 (small-cluster matrix)",
             )
+
+            # ---- optional v0.1 post-pass: spatial-guided family assignment ----
+            # Runs before the final snapshot so hit_timestamps_post_phase3 (and
+            # the whole NPZ -> .pt chain) transparently reflects it.
+            postpass_stats = None
+            if postpass and postpass != "none":
+                import postpass_v01 as _pp01
+                _t_pp = time.perf_counter()
+                _hit_ts_live = np.asarray(ns["hit_timestamps"])
+                if postpass in ("v0.1", "v0.1-fx"):
+                    _pp_log = _pp01.family_expand_nd(ns, _hit_ts_live)
+                    _n_moves = sum(
+                        1 for r in _pp_log
+                        if r["event"] in ("absorb", "seed_move")
+                        or (r["event"] == "contact" and r.get("moved"))
+                    )
+                elif postpass == "v0.1-rg":
+                    _pp_log = _pp01.region_grow_nd(ns, _hit_ts_live)
+                    _n_moves = sum(1 for r in _pp_log if r["event"] == "grow")
+                else:
+                    raise ValueError(f"unknown postpass {postpass!r}")
+                verify_backbone_hits_unchanged_v11(
+                    backbone_snapshot,
+                    hit_timestamps=ns["hit_timestamps"],
+                    stage_name=f"v0.1 post-pass ({postpass})",
+                )
+                postpass_stats = {
+                    "mode": postpass,
+                    "n_moves": int(_n_moves),
+                    "n_log_rows": int(len(_pp_log)),
+                    "elapsed_s": float(time.perf_counter() - _t_pp),
+                }
         hit_ts_post_phase3 = np.asarray(ns["hit_timestamps"], dtype=np.float32).copy()
         base_image_post_phase3 = np.asarray(ns["baseImage"], dtype=np.float32).copy()
 
@@ -536,6 +569,8 @@ def process_one_event_optimized(
 
         summary = _summarize_v2_result(result)
         summary["phase3"] = phase3_stats
+        if postpass_stats is not None:
+            summary["postpass_v01"] = postpass_stats
         summary["coverage"] = coverage
         summary["v2_cluster_relabel"] = {
             "n_new_cluster_ids": int(len(result.get("v2_cluster_relabel_log", []))),
@@ -640,6 +675,7 @@ def run_batch_optimized(
     compile_mode: str | None = "default",
     event_stride: int = 1,
     event_offset: int = 0,
+    postpass: str = "none",
 ) -> dict[str, Any]:
     fs_config = fs_config or build_default_first_stage_config()
     v2_config = v2_config or build_default_v2_config()
@@ -738,6 +774,7 @@ def run_batch_optimized(
                 v2_config=v2_config,
                 out_dir=out_dir_p,
                 verbose=verbose,
+                postpass=postpass,
             )
             if report.ok:
                 n_ok += 1
@@ -838,6 +875,13 @@ def main(argv: list[str] | None = None) -> int:
                              "same set of files.")
     parser.add_argument("--event-offset", type=int, default=0,
                         help="Offset 0..stride-1 for round-robin partitioning.")
+    parser.add_argument("--postpass", default="none",
+                        choices=["none", "v0.1", "v0.1-fx", "v0.1-rg"],
+                        help="optional v0.1 post-pass after Phase 3: "
+                             "'v0.1'/'v0.1-fx' = chi2 family-expand (spatial-"
+                             "guided, remove-and-rescore base); 'v0.1-rg' = "
+                             "cosine region-grow. Default 'none' = baseline "
+                             "vAlpha, bit-identical to previous releases.")
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args(argv)
 
@@ -870,6 +914,7 @@ def main(argv: list[str] | None = None) -> int:
         compile_mode=str(args.compile_mode),
         event_stride=int(args.event_stride),
         event_offset=int(args.event_offset),
+        postpass=str(args.postpass),
     )
     return 0 if res["n_err"] == 0 else 1
 

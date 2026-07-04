@@ -25,11 +25,12 @@ The **default is the error-matrix formulation** — the validated, conservative 
 | `VERSION` | name | what it does |
 |---|---|---|
 | `v1.0` *(default)* | **error-matrix** | greedy per-TPC brightest-first small-cluster association, unit-variance χ² (the ND vAlpha formulation). |
-| `v2.0` | **region-grow + tiebreaker** | adds cluster-guided spatial region-growing (confident light-matched clusters propagate t0 to neighbours; tuned conf_cos=0.55, light_margin=0.04) plus a learned-variance tiebreaker for ambiguous t0 candidates. Higher efficiency on the sim validation set (~+0.7 pp overall); the variance tiebreaker itself is roughly neutral. |
+| `v0.1` | **region-grow + tiebreaker** | the development line toward the first serious release: cluster-guided spatial region-growing (confident light-matched clusters propagate t0 to neighbours; tuned conf_cos=0.55, light_margin=0.04) plus a learned-variance tiebreaker for ambiguous t0 candidates. Higher efficiency on the sim validation set (~+0.8 pp overall, +1.3 pp low-E); the variance tiebreaker itself is roughly neutral. (`v2.0` = legacy alias.) |
+| `v0.1-fx` | **χ² family-expand** *(experimental)* | cosine-free agglomerative family expansion: error-matrix-arbitrated spatial families grown from decisive seeds (`TwoByTwo/matcher/family_expand_2x2.py`). Beats `v0.1` on the 2x2 sim aggregate (96.3% vs 95.7% vs 90.4% baseline on the hard-sample benchmark) but this 2x2 prototype scores at base=0 — known multi-flash caveat; the ND port (`M5p1/postpass_v01.py`) fixes it with remove-and-rescore. |
 
 ```bash
 bash scripts/run_2x2_sim.sh                 # v1.0 error-matrix (default)
-VERSION=v2.0 bash scripts/run_2x2_sim.sh    # opt into region-grow
+VERSION=v0.1 bash scripts/run_2x2_sim.sh    # opt into region-grow + tiebreaker
 ```
 
 ## 2x2 quick start (grab-and-run)
@@ -61,6 +62,34 @@ The 2x2 layout (matcher + perceiver + bundled models + driver) lives under [`Two
 ## ND-LAr (the original alpha release)
 
 Everything below documents the ND-LAr workflow. Its perceiver weights (~490 MB) are too big to commit to git and ship instead as a GitHub Release asset. The variance-prediction model is optional (the pipeline runs with a constant-std fallback when absent).
+
+### ND v0.1 post-pass (opt-in, experimental)
+
+The v0.1 development line (spatial-guided family assignment + tiebreaking) is
+available for ND as a post-Phase-3 post-pass in [`M5p1/postpass_v01.py`](M5p1/postpass_v01.py),
+opt-in via the production CLI — the default remains the bit-identical vAlpha baseline:
+
+```bash
+python -m M5p1.phase25_trial2_v_alpha_test --files ... --out-dir ... \
+    --postpass v0.1        # chi2 family-expand (or: v0.1-rg = cosine region-grow)
+```
+
+It runs before the final snapshot, so `hit_timestamps_post_phase3` and the whole
+NPZ → `.pt` chain transparently reflect it; the backbone guard is re-verified
+after the pass. Only blob clusters (labels ≥ split_index) with a uniform t0 can
+move; the Phase-1 track/shower backbone never does.
+
+| variant | what it is | measured (63 MiniProdN5p1 events, energy-weighted ±160 ns) |
+|---|---|---|
+| *(none, default)* | vAlpha baseline | 92.63% |
+| `v0.1` / `v0.1-fx` | **χ² family-expand**: agglomerative spatial families arbitrated by the error matrix, every score against the residual base (remove-and-rescore) | **92.83%** (+0.20 pp; 56/63 events improved, worst single-event −0.10 pp) |
+| `v0.1-rg` | **cosine region-grow** (2x2-tuned gates) | **92.88%** (+0.25 pp; 58/63 improved, but worst single-event −0.62 pp) |
+
+The two variants trade a sliver of aggregate for robustness: the χ² family-expand
+is magnitude-aware (a faint displaced fragment cannot latch onto a bright flash on
+spatial pattern alone), which is why its worst-case regression is 6× smaller.
+Assigned-hit fraction is unchanged (98.85%) — v0.1 only *moves* assigned blobs.
+Post-pass cost is negligible (~7–11 s on a ~9 min event).
 
 ## Quick start (any machine, any path)
 

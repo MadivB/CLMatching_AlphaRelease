@@ -15,12 +15,18 @@ Algorithm versions
 * ``--version v1.0``  (DEFAULT) — the **error-matrix** small-cluster association:
   greedy per-TPC brightest-first placement, unit-variance chi2.  This is the
   validated, conservative baseline (== the ND vAlpha formulation).
-* ``--version v2.0``  — adds the cluster-guided **region-grow** after-track
-  association (tuned: conf_cos=0.55, light_margin=0.04) plus the learned-variance
-  **tiebreaker** that re-ranks ambiguous t0 candidates with the 2x2 variance
-  model.  Higher efficiency on the validation sample but not yet the default.
+* ``--version v0.1``  — the development line toward the first serious release:
+  cluster-guided **region-grow** after-track association (tuned: conf_cos=0.55,
+  light_margin=0.04) plus the learned-variance **tiebreaker** that re-ranks
+  ambiguous t0 candidates with the 2x2 variance model.  Higher efficiency on the
+  validation sample but not yet the default.  (``v2.0`` = legacy alias.)
+* ``--version v0.1-fx``  (EXPERIMENTAL) — cosine-free **chi2 family expansion**
+  post-pass (family_expand_2x2.py): agglomerative spatial families arbitrated by
+  the error matrix.  Beats v0.1 on the 2x2 aggregate but the 2x2 prototype
+  scores at base=0 (known multi-flash caveat; the ND port fixes this with
+  remove-and-rescore — see M5p1/postpass_v01.py).
 
-Both versions use unit-variance for the core matching (the established best for
+All versions use unit-variance for the core matching (the established best for
 2x2 t0 chi2 — bright channels carry the flash-discriminating signal).
 
 Run directly (sys.path is wired up below); not as ``-m`` (the matcher uses flat
@@ -72,20 +78,32 @@ def _list_events(h5):
 
 
 def _version_config(version: str, var_wrapper):
-    """Map an algorithm-version string to run_pipeline_for_event kwargs."""
+    """Map an algorithm-version string to run_pipeline_for_event kwargs.
+
+    Naming: the DEFAULT is the validated error-matrix baseline; "v0.1" is the
+    development line (spatial-guided assignment + tiebreaker) that will mature
+    into the first serious release. "v2.0" is kept as a legacy alias of v0.1.
+    """
     v = (version or "v1.0").strip().lower()
     if v in ("v1", "v1.0", "error_matrix", "errormatrix", "baseline", "default"):
         # DEFAULT: error-matrix (greedy unit-variance) small-cluster association.
         return dict(enable_region_grow=False, tiebreak_variance_model=None)
-    if v in ("v2", "v2.0", "region_grow", "regiongrow"):
-        # region-grow (tuned defaults inside region_grow_association) + variance tiebreaker.
+    if v in ("v0.1", "v0.1-rg", "v2", "v2.0", "region_grow", "regiongrow"):
+        # v0.1: region-grow (tuned) + variance tiebreaker.
         return dict(enable_region_grow=True,
                     tiebreak_variance_model=var_wrapper, tie_frac=0.10)
-    raise SystemExit(f"unknown --version {version!r} (use v1.0 or v2.0)")
+    if v in ("v0.1-fx", "family_expand", "familyexpand"):
+        # v0.1-fx (EXPERIMENTAL): cosine-free chi2 family expansion applied as a
+        # post-pass on the greedy result (see family_expand_2x2.py; the 2x2
+        # prototype scores at base=0 — known multi-flash caveat, documented).
+        return dict(enable_region_grow=False, tiebreak_variance_model=None,
+                    _family_expand=True)
+    raise SystemExit(
+        f"unknown --version {version!r} (use v1.0 [default], v0.1, or v0.1-fx)")
 
 
 def _build_var_wrapper(device):
-    """Load the 2x2 variance model wrapped for the matcher tiebreaker (v2.0)."""
+    """Load the 2x2 variance model wrapped for the matcher tiebreaker (v0.1)."""
     import var_model as vm           # TwoByTwo/var_model/var_model.py
     import data_2x2 as data          # matcher
 
@@ -116,7 +134,9 @@ def main():
     ap.add_argument("--mode", choices=["sim", "data"], default="sim",
                     help="perceiver checkpoint to use")
     ap.add_argument("--version", default="v1.0",
-                    help="v1.0 = error-matrix (default) | v2.0 = region-grow + tiebreaker")
+                    help="v1.0 = error-matrix (default) | v0.1 = region-grow + "
+                         "tiebreaker (alias v2.0) | v0.1-fx = chi2 family-expand "
+                         "(experimental)")
     ap.add_argument("--event-stride", type=int, default=1)
     ap.add_argument("--event-offset", type=int, default=0)
     ap.add_argument("--max-events-per-file", type=int, default=0,
@@ -148,9 +168,11 @@ def main():
     var_wrapper = None
     cfg = _version_config(args.version, None)
     if cfg.get("tiebreak_variance_model", "sentinel") is None and \
-            args.version.strip().lower() in ("v2", "v2.0", "region_grow", "regiongrow"):
+            args.version.strip().lower() in ("v0.1", "v0.1-rg", "v2", "v2.0",
+                                             "region_grow", "regiongrow"):
         var_wrapper = _build_var_wrapper(args.device)
         cfg = _version_config(args.version, var_wrapper)
+    family_expand = bool(cfg.pop("_family_expand", False))
     if args.verbose:
         print(f"[w{args.event_offset}] models loaded ({args.mode}, {args.version}) "
               f"in {time.time()-t0:.1f}s", flush=True)
@@ -192,6 +214,21 @@ def main():
                                         ev_id=np.int64(ev_id), ok=np.int64(0))
                     n_skip += 1
                     continue
+                if family_expand:
+                    # v0.1-fx: chi2 family-expansion post-pass (in-place on
+                    # hit_timestamps; uses the pipeline's own structures).
+                    import family_expand_2x2 as fx
+                    ev = r["event"]
+                    fx.family_expand_association(
+                        labels=r["labels"], xset=ev.xset, yset=ev.yset,
+                        zset=ev.zset, Eset=ev.Eset, hitTPCid=ev.hitTPCid,
+                        hit_t0=r["hit_timestamps"],
+                        cluster_energies=r["cluster_energies"],
+                        image_maps=r["image_maps"], base_image=r["base_image"],
+                        full_wvfm=ev.fullLightWaveform,
+                        full_var=ev.fullLightVar,
+                        track_labels=r["track_labels"],
+                        flash_seeds=ev.flash_seeds)
                 hit_refs = np.asarray(r["hit_refs"], np.int64)
                 hit_ts = np.asarray(r["hit_timestamps"], np.float32)
                 labels = np.asarray(r.get("labels", np.full(hit_refs.size, -1)), np.int64)

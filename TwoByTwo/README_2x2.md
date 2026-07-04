@@ -60,21 +60,31 @@ python TwoByTwo/aggregate_2x2_to_pt.py --shard-dir output/smoke --overwrite
 | `--version` | config passed to `run_pipeline_for_event` | notes |
 |---|---|---|
 | `v1.0` (default) | `enable_region_grow=False` | **error-matrix**: greedy per-TPC brightest-first small-cluster association, unit-variance χ². The ND vAlpha formulation. |
-| `v2.0` | `enable_region_grow=True`, `tiebreak_variance_model=<2x2 var>`, `tie_frac=0.10` | **region-grow + tiebreaker**. |
+| `v0.1` (alias `v2.0`) | `enable_region_grow=True`, `tiebreak_variance_model=<2x2 var>`, `tie_frac=0.10` | **region-grow + tiebreaker** — the development line toward the first serious release. |
+| `v0.1-fx` (experimental) | greedy + `family_expand_association` post-pass | **χ² family-expand** ([family_expand_2x2.py](matcher/family_expand_2x2.py)): cosine-free agglomerative spatial families arbitrated by the error matrix. |
 
-Both use `unit_variance=True` for the core matching — the established best for 2x2
+All use `unit_variance=True` for the core matching — the established best for 2x2
 t0 χ² (the bright channels carry the flash-discriminating signal; down-weighting
 them with a learned variance hurts the match).
 
 ### Why v1.0 is the default
 
-The error-matrix formulation is the validated, conservative baseline. The
-region-grow (v2.0) raises efficiency on the sim validation set by ~+0.7 pp
-overall (and is low-energy-safe — every per-cluster energy bin improves), but it
-is newer and changes association behaviour, so it is opt-in until further review.
-The learned-variance tiebreaker inside v2.0 is roughly neutral in aggregate
-(RG 95.845% vs RG+tiebreak 95.830% on a 3-file A/B); it is kept because it is the
-"newly developed method with tiebreaker" and can help on specific ambiguous events.
+The error-matrix formulation is the validated, conservative baseline. The v0.1
+line is opt-in until further review:
+
+* **region-grow (v0.1)** raises 2x2 sim efficiency ~+0.8 pp overall (low-energy-
+  safe — every per-cluster energy bin improves). The learned-variance tiebreaker
+  inside it is roughly neutral in aggregate (95.845% vs 95.830% on a 3-file A/B);
+  kept because it targets genuinely ambiguous t0 ties.
+* **family-expand (v0.1-fx)** beats region-grow on the 2x2 sim aggregate
+  (96.3% vs 95.7% vs 90.4% baseline on the hard-sample benchmark) but this 2x2
+  prototype scores at base=0, a known multi-flash caveat. The ND port
+  (`M5p1/postpass_v01.py`) fixes it with remove-and-rescore residual scoring;
+  measured on ND (63 events): baseline 92.63% → family-expand 92.83%
+  (worst event −0.10 pp) / region-grow 92.88% (worst event −0.62 pp).
+* Cross-detector picture: family-expand is the *safer* variant (magnitude-aware —
+  a faint displaced fragment cannot latch onto a bright flash on pattern alone);
+  region-grow is marginally higher in ND aggregate. Both ship in v0.1.
 
 ## Output
 
