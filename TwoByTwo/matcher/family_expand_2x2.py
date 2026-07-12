@@ -72,8 +72,15 @@ def family_expand_association(*, labels, xset, yset, zset, Eset, hitTPCid, hit_t
                               accept_margin: float = 0.15, reconcile_hyst: float = 0.05,
                               support_fraction: float = 0.90, support_floor: float = 25.0,
                               try_next_neighbor: bool = True, max_outer: int = 2000,
-                              adaptive_gap: bool = False, gap_k: float = 3.0
+                              adaptive_gap: bool = False, gap_k: float = 3.0,
+                              respect_greedy: bool = True
                               ) -> List[dict]:
+    """respect_greedy=True (DEFAULT, required behavior): a cluster that already
+    carries a greedy t0 assignment is FROZEN — it anchors a family at exactly
+    that t0 (so unassigned neighbours can join it) but family expansion never
+    changes it. Only clusters with NO t0 can be absorbed/assigned. The
+    pre-freeze behavior (full reassignment) is respect_greedy=False, kept
+    only for A/B archaeology."""
     from scipy.spatial import cKDTree
 
     labels = np.asarray(labels, np.int64)
@@ -154,6 +161,18 @@ def family_expand_association(*, labels, xset, yset, zset, Eset, hitTPCid, hit_t
             d = _cluster_min_dist(info[a]["pts"], info[b]["tree"])
             D[a][b] = D[b][a] = d
 
+    # ---- greedy-frozen anchors (the REQUIRED rule): any cluster that already
+    # carries a greedy t0 is immutable — it anchors a family at exactly that
+    # value; family expansion may add unassigned neighbours to it but can
+    # NEVER change it. ----
+    greedy_t0: Dict[int, float] = {}
+    if respect_greedy:
+        for c in ids:
+            t = hit_t0[labels == c]
+            t = t[np.isfinite(t) & (t >= 0)]
+            if t.size:
+                greedy_t0[c] = float(np.median(t))
+
     # ---- families ----
     fam_of: Dict[int, Optional[int]] = {c: None for c in ids}
     families: List[dict] = []
@@ -162,6 +181,12 @@ def family_expand_association(*, labels, xset, yset, zset, Eset, hitTPCid, hit_t
             families.append({"clusters": {c}, "t0": track_t0.get(c, best_t0[c]),
                              "track": True})
             fam_of[c] = len(families) - 1
+    if respect_greedy:
+        for c in ids:                          # greedy-assigned blobs: frozen anchors
+            if fam_of[c] is None and c in greedy_t0:
+                families.append({"clusters": {c}, "t0": greedy_t0[c],
+                                 "track": True, "anchor": True})
+                fam_of[c] = len(families) - 1
 
     def nearest_externals(fam_clusters, reach):
         out = []
@@ -181,6 +206,27 @@ def family_expand_association(*, labels, xset, yset, zset, Eset, hitTPCid, hit_t
         guard += 1
         # STEP 1 — seed: most decisive unassigned cluster (error matrix), E tiebreak
         seed = max(unassigned, key=lambda c: (decisiveness(c), info[c]["E"]))
+        # STEP 0 (frozen mode): an unassigned cluster adjacent to an EXISTING
+        # family (greedy anchor or earlier fx family) that accepts its t0 just
+        # JOINS it — assignment, never reassignment.
+        if respect_greedy:
+            near = sorted(
+                (min(D[fc][seed] for fc in F["clusters"]), fi)
+                for fi, F in enumerate(families)
+                if any(D[fc].get(seed, np.inf) <= contact_cm for fc in F["clusters"]))
+            adopted = False
+            for dmin, fi in near:
+                if wants(seed, families[fi]["t0"]):
+                    families[fi]["clusters"].add(seed)
+                    fam_of[seed] = fi
+                    rows.append({"event": "adopt", "cluster": seed, "into": fi,
+                                 "t0": families[fi]["t0"], "dist_cm": round(dmin, 2),
+                                 "energy_mev": info[seed]["E"]})
+                    adopted = True
+                    break
+            if adopted:
+                unassigned.remove(seed)
+                continue
         fidx = len(families)
         families.append({"clusters": {seed}, "t0": best_t0[seed], "track": False})
         fam_of[seed] = fidx
@@ -244,9 +290,14 @@ def family_expand_association(*, labels, xset, yset, zset, Eset, hitTPCid, hit_t
             if not progressed:
                 break                                  # family complete -> back to STEP 1
 
-    # ---- write per-family t0 to hits (tracks unchanged: fam t0 == track t0) ----
+    # ---- write per-family t0 to hits. In frozen mode, greedy/track clusters
+    # keep their ORIGINAL per-hit values bit-for-bit (never overridden); only
+    # newly-assigned clusters are written. ----
+    frozen = (set(track_t0) | set(greedy_t0)) if respect_greedy else set()
     for fam in families:
         for c in fam["clusters"]:
+            if c in frozen:
+                continue
             hit_t0[labels == c] = np.float32(fam["t0"])
 
     return rows

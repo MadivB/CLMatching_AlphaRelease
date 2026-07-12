@@ -1,10 +1,11 @@
 """
-v0.1 post-pass — spatial-guided cluster (re)assignment for ND-LAr vAlpha.
+v0.1 post-pass — spatial-guided cluster assignment for ND-LAr vAlpha.
 
-The "v0.1" development line (spatial-guided family assignment + light-arbitrated
-tiebreaking): association post-passes that run AFTER Phase 3, before the final
-snapshot. Opt-in via `--postpass v0.1` in M5p1.phase25_trial2_v_alpha_test; with
-the flag off the pipeline is bit-identical to the vAlpha baseline.
+RULE (required): the post-pass NEVER overrides an existing t0 assignment
+from the main chain — assigned clusters are frozen anchors; only clusters
+with no t0 can be assigned (respect_assigned=True default). Opt-in via
+`--postpass v0.1`; with the flag off the pipeline is bit-identical to the
+vAlpha baseline.
 
 Two arms, both operating on the vAlpha namespace `ns` AFTER _run_phase3, both
 moving ONLY blob clusters (labels >= split_index) with a uniform finite t0;
@@ -93,7 +94,7 @@ def _cluster_state(ns, *, min_hits: int = 1):
     return st
 
 
-def _blob_adjacency(ns, st, *, rmax: float):
+def _blob_adjacency(ns, st, *, rmax: float, include_unassigned: bool = False):
     """adj[e] = {other_cid: min hit-hit distance} for every movable blob e,
     against ANY cluster within rmax.  Built by querying each blob's (few) hits
     against one global KD-tree — avoids an O(N^2) pair sweep on ~2e5-hit events.
@@ -106,7 +107,9 @@ def _blob_adjacency(ns, st, *, rmax: float):
     tree = cKDTree(XYZ)
     adj: Dict[int, Dict[int, float]] = {}
     for cid, s in st.items():
-        if s["backbone"] or s["t0"] is None or not s["tpcs"]:
+        if s["backbone"] or not s["tpcs"]:
+            continue
+        if s["t0"] is None and not include_unassigned:
             continue
         pts = XYZ[s["mask"]]
         neigh = tree.query_ball_point(pts, r=float(rmax))
@@ -192,14 +195,21 @@ class _Chi2Scorer:
 def family_expand_nd(ns, hit_t0: np.ndarray, *,
                      contact_cm: float = 3.5, accept_margin: float = 0.15,
                      reconcile_hyst: float = 0.05, try_next_neighbor: bool = True,
-                     min_blob_hits: int = 1, max_outer: int = 20000) -> List[dict]:
-    """chi2 family expansion post-pass. Mutates hit_t0 in place; returns log."""
+                     min_blob_hits: int = 1, max_outer: int = 20000,
+                     respect_assigned: bool = True) -> List[dict]:
+    """chi2 family expansion post-pass. Mutates hit_t0 in place; returns log.
+
+    respect_assigned=True (DEFAULT, required rule): clusters that already
+    carry a t0 from the main chain are FROZEN anchors — the pass may only
+    ASSIGN clusters with no t0 (adoption into adjacent families); it never
+    reassigns. respect_assigned=False is the legacy override mode."""
     labels = np.asarray(ns["labels_global"])
     st = _cluster_state(ns, min_hits=min_blob_hits)
     ns_ts_saved = ns["hit_timestamps"]
     ns["hit_timestamps"] = hit_t0            # st masks reference labels only; fine
     sc = _Chi2Scorer(ns, st)
-    adj = _blob_adjacency(ns, st, rmax=max(contact_cm, 8.0))
+    adj = _blob_adjacency(ns, st, rmax=max(contact_cm, 8.0),
+                          include_unassigned=respect_assigned)
 
     t0c = ns["t0Candidates"]
 
@@ -213,9 +223,14 @@ def family_expand_nd(ns, hit_t0: np.ndarray, *,
             out.add(round(s["t0"]))
         return sorted(float(x) for x in out)
 
-    movable = [c for c, s in st.items()
-               if (not s["backbone"]) and s["t0"] is not None and s["tpcs"]
-               and c in adj]
+    if respect_assigned:
+        movable = [c for c, s in st.items()
+                   if (not s["backbone"]) and s["t0"] is None and s["tpcs"]
+                   and c in adj]
+    else:
+        movable = [c for c, s in st.items()
+                   if (not s["backbone"]) and s["t0"] is not None and s["tpcs"]
+                   and c in adj]
     cand_of = {c: candidates(c) for c in movable}
     movable = [c for c in movable if len(cand_of[c]) >= 1]
 
@@ -248,6 +263,11 @@ def family_expand_nd(ns, hit_t0: np.ndarray, *,
         if s["backbone"] and s["t0"] is not None:
             families.append({"clusters": {c}, "t0": s["t0"], "anchor": True})
             fam_of[c] = len(families) - 1
+    if respect_assigned:                          # ALL assigned clusters = frozen anchors
+        for c, s in st.items():
+            if fam_of[c] is None and s["t0"] is not None:
+                families.append({"clusters": {c}, "t0": s["t0"], "anchor": True})
+                fam_of[c] = len(families) - 1
 
     rows: List[dict] = []
     unassigned = sorted((c for c in movable if fam_of[c] is None),
@@ -260,7 +280,7 @@ def family_expand_nd(ns, hit_t0: np.ndarray, *,
         if fam_of[seed] is not None:
             continue
         bt, _ = best_now(seed)
-        if abs(bt - st[seed]["t0"]) > 0.5:        # seed itself prefers elsewhere
+        if st[seed]["t0"] is None or abs(bt - st[seed]["t0"]) > 0.5:  # assign/move seed
             sc.move(seed, bt)
             hit_t0[st[seed]["mask"]] = np.float32(bt)
             rows.append({"event": "seed_move", "cluster": seed,
@@ -288,7 +308,7 @@ def family_expand_nd(ns, hit_t0: np.ndarray, *,
                 fe = fam_of[e]
                 if fe is None:                    # case a/b
                     if wants(e, F["t0"]):
-                        if abs(st[e]["t0"] - F["t0"]) > 0.5:
+                        if st[e]["t0"] is None or abs(st[e]["t0"] - F["t0"]) > 0.5:
                             sc.move(e, F["t0"])
                             hit_t0[st[e]["mask"]] = np.float32(F["t0"])
                         F["clusters"].add(e); fam_of[e] = fidx
@@ -313,7 +333,7 @@ def family_expand_nd(ns, hit_t0: np.ndarray, *,
                                  "famB": fe, "chi_A": chi_a, "chi_B": chi_b,
                                  "moved": bool(move), "dist_cm": round(d, 2)})
                     if move:
-                        if abs(st[e]["t0"] - F["t0"]) > 0.5:
+                        if st[e]["t0"] is None or abs(st[e]["t0"] - F["t0"]) > 0.5:
                             sc.move(e, F["t0"])
                             hit_t0[st[e]["mask"]] = np.float32(F["t0"])
                         F2["clusters"].discard(e)
