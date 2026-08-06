@@ -148,6 +148,39 @@ def predict_first_stage_images_and_std(
 ) -> PredictionBundle:
     config = FirstStageConfig() if config is None else config
 
+    # Quick-test filter: skip perceiver prediction for clusters that can only
+    # ever reach the Phase-3 small-cluster matrix stage.  Keep-predicate
+    # mirrors v11_phased_matching._partition_cluster_population exactly:
+    # backbone label (< split_index) OR spans >1 TPC OR E > threshold (strict).
+    # Applied ONLY here -- v8 leftover absorption re-runs the perceiver with
+    # temporary labels >= 1_000_000 and must never see this filter.
+    restrict_clusters: set[int] | None = None
+    min_e = config.prediction.min_cluster_energy_mev
+    if min_e is not None:
+        if str(config.prediction.image_prediction_mode).lower() != "streaming":
+            raise ValueError(
+                "PredictionConfig.min_cluster_energy_mev requires "
+                "image_prediction_mode='streaming'."
+            )
+        lab = np.asarray(labels_global, dtype=np.int64)
+        tpc = np.asarray(hit_tpc_id, dtype=np.int64)
+        e_arr = np.asarray(energy)
+        # Backbone track/shower labels are always predicted.
+        restrict_clusters = set(range(int(split_index)))
+        for l in np.unique(lab[lab >= 0]):
+            l = int(l)
+            if l < int(split_index):
+                continue
+            mask = lab == l
+            # Energy expression mirrors _run_phase2's cluster_energies sum
+            # (same array, same dtype, same masked pairwise .sum()) so the
+            # strict-> comparison cannot diverge from the v11 partition at
+            # the threshold boundary.  TPC span may only over-count relative
+            # to _cluster_image_tpcs (which drops out-of-range tpc ids), so
+            # the keep-set is always a superset of the Phase-2 primaries.
+            if np.unique(tpc[mask]).size > 1 or float(e_arr[mask].sum()) > float(min_e):
+                restrict_clusters.add(l)
+
     t_total = time.perf_counter()
     t0 = time.perf_counter()
     if str(config.prediction.image_prediction_mode).lower() == "streaming":
@@ -169,6 +202,7 @@ def predict_first_stage_images_and_std(
             use_mixed_precision=config.prediction.image_use_mixed_precision,
             amp_dtype=config.prediction.image_amp_dtype,
             store_dense_meta=config.prediction.image_store_dense_meta,
+            restrict_clusters=restrict_clusters,
         )
     elif str(config.prediction.image_prediction_mode).lower() == "dense":
         image_maps, image_meta = process_clusters_to_imageMaps(
@@ -238,6 +272,13 @@ def predict_first_stage_images_and_std(
     t_variance = time.perf_counter() - t0
 
     image_meta = dict(image_meta)
+    if min_e is not None:
+        n_all_labels = int(np.asarray(labels_global).max()) + 1 if np.any(np.asarray(labels_global) >= 0) else 0
+        image_meta["prediction_filter"] = {
+            "min_cluster_energy_mev": float(min_e),
+            "n_labels_total": n_all_labels,
+            "n_labels_predicted": int(len(restrict_clusters)) if restrict_clusters is not None else n_all_labels,
+        }
     image_meta["pipeline_timings"] = {
         "image_prediction_s": float(t_image),
         "cluster_tpc_maps_s": float(t_maps),

@@ -242,7 +242,31 @@ def _build_tpc_segments_toolbox(
                 if len(comp_local) > 1:
                     components = [local_idx[sub_idx] for sub_idx in comp_local]
 
-            kept_components = [comp for comp in components if int(comp.size) >= int(split_min_component_hits)]
+            # A kept component must satisfy a length standard as well as the
+            # hit-count gate: splitting can leave a short dense fragment whose
+            # combined (pre-split) extent was what passed min_length_cm.
+            # Two tiers: the full track bar (min_length_cm), or the same
+            # rescue-tier quality bar the leftover rescue applies before
+            # promoting a line-like cluster to the backbone — a fragment with
+            # track provenance should not be held to a higher standard than a
+            # random leftover cluster. Fragments failing both tiers fall to
+            # the leftovers (rescue / deferred-cluster paths).
+            def _component_passes(comp: np.ndarray) -> bool:
+                if int(comp.size) < int(split_min_component_hits):
+                    return False
+                if float(min_length_cm) <= 0.0:
+                    return True
+                metrics_c = _fit_line_metrics(pts_tpc[comp])
+                if metrics_c["length_cm"] >= float(min_length_cm):
+                    return True
+                return (
+                    bool(promote_line_like_leftovers)
+                    and metrics_c["length_cm"] >= float(rescue_min_length_cm)
+                    and metrics_c["linearity"] >= float(rescue_min_linearity)
+                    and metrics_c["transverse_rms"] <= float(rescue_max_transverse_rms)
+                )
+
+            kept_components = [comp for comp in components if _component_passes(comp)]
             if len(kept_components) == 0:
                 dropped_track_fragments += int(local_idx.size)
                 continue

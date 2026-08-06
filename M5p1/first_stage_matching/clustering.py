@@ -39,7 +39,10 @@ def run_global_track_clustering(
     z: np.ndarray,
     io_group: np.ndarray,
     config: ClusteringConfig | None = None,
+    energy: np.ndarray | None = None,
 ) -> ClusteringResult:
+    """``energy`` (per-hit MeV) is only consumed by the opt-in intersection
+    refinement; the vanilla path never reads it."""
     config = ClusteringConfig() if config is None else config
     toolbox = load_track_clustering_toolbox()
     labels_global, split_index, label_info, debug = toolbox.build_global_labels_toolbox(
@@ -85,6 +88,94 @@ def run_global_track_clustering(
         return_label_info=True,
         return_debug_info=True,
     )
+
+    if config.intersection_refine_enable:
+        if energy is None:
+            raise ValueError(
+                "ClusteringConfig.intersection_refine_enable=True requires "
+                "energy= to be passed to run_global_track_clustering."
+            )
+        from .intersection_refine import refine_intersections
+
+        refined, ir_stats = refine_intersections(
+            labels_global=np.asarray(labels_global),
+            split_index=int(split_index),
+            label_info=label_info,
+            debug=debug,
+            x=x,
+            y=y,
+            z=z,
+            io_group=io_group,
+            energy=energy,
+            config=config,
+        )
+        labels_global = refined
+        debug = dict(debug)
+        debug["intersection_refinement"] = ir_stats
+        # Refresh membership-derived diagnostics of touched labels only
+        # ("type" and all other keys stay untouched; entries never deleted).
+        touched = {int(l) for rec in ir_stats.get("pairs", []) for l in rec["labels"]}
+        if touched:
+            tpc_ids = (np.asarray(io_group, dtype=np.int64) - 1) // 2
+            labels_arr = np.asarray(labels_global)
+            for lab in sorted(touched):
+                if lab not in label_info:
+                    continue
+                members = np.flatnonzero(labels_arr == lab)
+                label_info[lab]["n_hits"] = int(members.size)
+                label_info[lab]["tpcs"] = sorted(int(v) for v in np.unique(tpc_ids[members]))
+
+    if config.vertex_merge_enable:
+        from .vertex_merge import merge_vertex_tracks
+
+        labels_global, vm_stats = merge_vertex_tracks(
+            labels_global=np.asarray(labels_global),
+            split_index=int(split_index),
+            label_info=label_info,
+            x=x,
+            y=y,
+            z=z,
+            config=config,
+        )
+        debug = dict(debug)
+        debug["vertex_merge"] = vm_stats
+        touched = {int(l) for g in vm_stats.get("groups", []) for l in g}
+        if touched:
+            tpc_ids = (np.asarray(io_group, dtype=np.int64) - 1) // 2
+            labels_arr = np.asarray(labels_global)
+            for lab in sorted(touched):
+                if lab not in label_info:
+                    continue
+                members = np.flatnonzero(labels_arr == lab)
+                if members.size:
+                    label_info[lab]["n_hits"] = int(members.size)
+                    label_info[lab]["tpcs"] = sorted(int(v) for v in np.unique(tpc_ids[members]))
+
+    if getattr(config, "shower_absorb_enable", False):
+        from .shower_absorb import absorb_shower_noise
+
+        labels_global, sa_stats = absorb_shower_noise(
+            labels_global=np.asarray(labels_global),
+            split_index=int(split_index),
+            label_info=label_info,
+            x=x,
+            y=y,
+            z=z,
+            config=config,
+        )
+        debug = dict(debug)
+        debug["shower_absorb"] = sa_stats
+        touched = {int(r["label"]) for r in sa_stats.get("per_shower", [])}
+        if touched:
+            tpc_ids = (np.asarray(io_group, dtype=np.int64) - 1) // 2
+            labels_arr = np.asarray(labels_global)
+            for lab in sorted(touched):
+                if lab not in label_info:
+                    continue
+                members = np.flatnonzero(labels_arr == lab)
+                if members.size:
+                    label_info[lab]["n_hits"] = int(members.size)
+                    label_info[lab]["tpcs"] = sorted(int(v) for v in np.unique(tpc_ids[members]))
 
     labels_global = np.asarray(labels_global, dtype=np.int32)
     n_noise = int(np.count_nonzero(labels_global < 0))

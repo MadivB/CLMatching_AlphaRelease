@@ -65,6 +65,14 @@ class ModelConfig:
 class PredictionConfig:
     image_batch_size: int = 8
     image_prediction_mode: str = "streaming"  # "streaming" avoids all-groups dense voxel tensors; "dense" is legacy.
+    # Quick-test knob: when set, skip perceiver image prediction for blob
+    # clusters (label >= split_index) that are single-TPC AND have total
+    # E <= this many MeV -- exactly the population Phase 3 would sweep up
+    # (v11_phased_matching._partition_cluster_population routes a cluster to
+    # the small-cluster matrix stage unless it spans >1 TPC or E > 50 MeV).
+    # Backbone track/shower labels are always predicted.  None = off
+    # (vanilla, bit-identical).  Streaming mode only.
+    min_cluster_energy_mev: float | None = None
     image_voxelize_device: str = "auto"  # "auto" uses GPU scatter when the light model is on CUDA.
     image_use_mixed_precision: bool = False
     image_amp_dtype: str = "bf16"
@@ -116,6 +124,62 @@ class ClusteringConfig:
     track_noise_absorb_endpoint_margin_cm: float = 4.0
     leftover_dbscan_eps: float = 4.0
     leftover_dbscan_min_samples: int = 3
+    # ---- intersection refinement (opt-in; vanilla bit-identical when off).
+    # Post-clustering hit-level relabel at track/cluster and track/track
+    # crossings; see first_stage_matching/intersection_refine.py.  Requires
+    # `energy` to be passed to run_global_track_clustering when enabled.
+    intersection_refine_enable: bool = False
+    ir_bin_cm: float = 2.0                       # axial density bin width
+    ir_min_baseline_bins: int = 5                # >=10 cm clean track to trust rho0
+    ir_min_baseline_mevcm: float = 0.05          # below this the "track" is junk
+    ir_soft_factor: float = 1.5                  # soft cap = f * baseline in a crossing
+    ir_endpoint_soft_factor: float | None = None # None = skip endpoint windows (Bragg guard); e.g. 3.0 to allow bounded shedding there
+    ir_min_excess_mev: float = 3.0               # trigger dead-band
+    ir_window_margin_cm: float = 3.0             # slop around the geometric contact
+    ir_max_window_frac: float = 0.5              # window > half the segment => parallel/degenerate, skip
+    ir_endpoint_guard_cm: float = 6.0            # Bragg rise lives in the last few cm
+    ir_core_frac: float = 0.5                    # core radius = frac * r_base (never moves)
+    ir_core_min_cm: float = 0.55
+    ir_halo_link_cm: float = 2.8                 # shed hits must touch the blob (stage-2.5 radius)
+    ir_theta_min_deg: float = 10.0               # below this, crossing windows blow up
+    ir_cross_dist_scale: float = 1.0
+    ir_halflen_min_cm: float = 3.0
+    ir_halflen_max_cm: float = 10.0
+    ir_clear_margin: float = 0.35                # geometric pinning margin (stage-2.5 uses 0.08)
+    ir_ratio_tol: float = 0.15                   # don't touch near-balanced crossings
+    ir_donor_floor_ratio: float = 1.0            # donor keeps >= its own baseline continuation
+    ir_pair_energy_cap_mev: float = 80.0         # stage-2.5 commit-gate value
+    ir_recipient_gain_frac: float = 1.5          # blob gains <= f * its own energy
+    ir_min_recipient_hits: int = 3
+    ir_min_pool_hits: int = 4
+    ir_min_track_hits: int = 10
+    ir_min_track_len_cm: float = 8.0
+    ir_max_pairs: int = 256                      # runaway guard (a busy 176k-hit ND event has ~180 candidates)
+    ir_gap_guard_cm: float = 4.0                 # new-gap rollback threshold (matches gap-density prune)
+    ir_recipient_types: tuple = ("cluster", "shower")
+    # ---- vertex-track merging (opt-in, v0.2.5; vanilla bit-identical when off).
+    # Merge backbone track clusters whose ENDS converge on a common origin and
+    # whose end-directions extend away from it; deliberately conservative —
+    # when in doubt, keep them fragmented.  first_stage_matching/vertex_merge.py.
+    vertex_merge_enable: bool = False
+    vm_end_radius_cm: float = 4.0                # endpoint-to-endpoint gate
+    vm_line_tol_cm: float = 2.5                  # both end-lines must pass this close to the vertex
+    vm_angle_min_deg: float = 15.0               # exclude collinear joins (broken tracks)
+    vm_angle_max_deg: float = 165.0              # exclude back-to-back pass-throughs
+    vm_min_hits: int = 15
+    vm_min_length_cm: float = 4.0
+    vm_end_len_cm: float = 8.0                   # local end-fit window
+    vm_crossing_guard_cm: float = 3.0            # endpoint near the OTHER track's core => X, not V
+    vm_min_linearity: float = 0.75               # fuzzy end fits never merge
+    vm_min_local_hits: int = 6
+    vm_max_group: int = 6                        # oversized vertex groups are dropped whole
+    # ---- shower noise absorption (opt-in, v0.3.5): showers admit label -1
+    # hits through their PCA ellipsoid; tracks keep the existing toolbox pass.
+    shower_absorb_enable: bool = False
+    shower_absorb_k_sigma: float = 2.2
+    shower_absorb_pad_frac: float = 0.10
+    shower_absorb_axis_floor_cm: float = 2.0
+    shower_absorb_max_frac: float = 0.30
 
 
 @dataclass(slots=True)
