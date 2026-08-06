@@ -263,6 +263,7 @@ def process_clusters_to_imageMaps_streaming(
     use_mixed_precision: bool = False,
     amp_dtype: str = "bf16",
     store_dense_meta: bool = False,
+    restrict_clusters: set[int] | None = None,
 ) -> tuple[dict[tuple[int, int], np.ndarray], dict[str, Any]]:
     """
     Streaming equivalent of process_clusters_to_imageMaps.
@@ -270,6 +271,10 @@ def process_clusters_to_imageMaps_streaming(
     The dense 3D voxel tensor is built one inference batch at a time, so peak
     memory is O(batch_size) groups instead of O(all groups). The returned
     imageMaps are still full (120, waveform_len) arrays for every group.
+
+    ``restrict_clusters``: when given, only these labels are grouped and
+    predicted; all other clusters produce no (cluster, tpc) image entries.
+    None = predict every cluster (default).
     """
     t_total = time.perf_counter()
     t0 = time.perf_counter()
@@ -281,6 +286,7 @@ def process_clusters_to_imageMaps_streaming(
         tpc_ids,
         labels,
         include_noise=include_noise,
+        restrict_clusters=restrict_clusters,
         yaml_path=yaml_path,
     )
     timing_group = time.perf_counter() - t0

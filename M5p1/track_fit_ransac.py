@@ -440,21 +440,28 @@ def build_track_params(x, y, z, labels):
 
 def filter_tracks_by_gap_density(x, y, z, labels,
                                  gap_cm=2.0,
-                                 min_seg_size=25):
+                                 min_seg_size=25,
+                                 min_length_cm=0.0):
     """
     For each track:
       - Project hits onto its fitted line (1D coordinate t).
       - Sort by t; split into segments where gaps > gap_cm.
-      - For segments with >= min_seg_size hits, compute density = N / length.
+      - For segments with >= min_seg_size hits (and, if min_length_cm > 0,
+        extent >= min_length_cm), compute density = N / length.
       - Keep ONLY the segment with highest density; all other hits for that track -> -1.
-      - If no segment passes min_seg_size, drop the whole track.
+      - If no segment qualifies, drop the whole track.
 
     This breaks spurious connections to distant blobs along the track direction.
+    Without the min_length_cm gate, a short dense blob collinear with a real
+    track can win the density contest and survive as a "track" even though it
+    is far below the track length cut (the full pre-split extent is what passed
+    the min-length filter upstream).
     """
     X = np.column_stack([np.asarray(x), np.asarray(y), np.asarray(z)]).astype(np.float64)
     labels_f = np.array(labels, copy=True)
     gap = float(gap_cm)
     min_seg = int(min_seg_size)
+    min_len = float(min_length_cm)
 
     for lab in np.unique(labels):
         if lab < 0:
@@ -495,6 +502,8 @@ def filter_tracks_by_gap_density(x, y, z, labels,
             if n < min_seg:
                 continue
             length = max(t_sorted[b-1] - t_sorted[a], 1e-6)
+            if min_len > 0.0 and length < min_len:
+                continue
             density = n / length
             if density > best_density:
                 best_density = density
@@ -531,7 +540,9 @@ def fit_tracks_labels(x, y, z,
       3) Keep top-K & reattach.
       4) λ-distance prune.
       5) Min-length prune.
-      6) Gap-density prune: remove low-density segments separated by ~4 cm.
+      6) Gap-density prune: remove low-density segments separated by ~4 cm;
+         the kept segment must itself pass min_length_cm (re-checked on the
+         refit line afterwards).
 
     Returns
     -------
@@ -586,12 +597,24 @@ def fit_tracks_labels(x, y, z,
         min_length_cm=float(min_length_cm),
     )
 
-    # 6) gap-density prune (kills track+far-blob connections)
-    labels_final = filter_tracks_by_gap_density(
+    # 6) gap-density prune (kills track+far-blob connections); the kept
+    #    segment must itself satisfy the min-length cut, otherwise a short
+    #    dense blob collinear with a real track piece survives as a "track"
+    #    while only the combined (pre-split) extent ever passed min_length_cm
+    labels_gap = filter_tracks_by_gap_density(
         x, y, z,
         labels_len,
         gap_cm=4.0,
         min_seg_size=25,
+        min_length_cm=float(min_length_cm),
+    )
+
+    # 6b) re-apply the min-length prune on the refit line of what remains
+    #     (the gap filter measures extent along the pre-split fitted line)
+    labels_final = filter_tracks_by_min_length(
+        x, y, z,
+        labels_gap,
+        min_length_cm=float(min_length_cm),
     )
 
     # 7) build line parameters for surviving tracks

@@ -113,6 +113,7 @@ def run_first_stage_charge_light_matching(
         z=event.z,
         io_group=event.io_group,
         config=config.clustering,
+        energy=event.energy,
     )
     t_clustering = time.perf_counter() - t0
     if verbose:

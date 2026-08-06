@@ -87,6 +87,7 @@ from M5p1.phase25_trial2_valpha_batch import (  # noqa: E402
     EventReport,
     build_default_first_stage_config,
     build_default_v2_config,
+    V11_LARGE_CLUSTER_ENERGY_MEV,
 )
 from M5p1.phase25_trial2_valpha_batch import _expand_files  # noqa: E402
 
@@ -402,6 +403,7 @@ def process_one_event_optimized(
     verbose: bool = False,
     save_arrays: bool = True,
     postpass: str = "none",
+    skip_phase3: bool = False,
 ) -> EventReport:
     t_start = time.perf_counter()
     file_basename = Path(data_file).stem
@@ -512,12 +514,38 @@ def process_one_event_optimized(
             )
 
             # ---- Phase 3: small-cluster matrix association (notebook cell 35) ----
-            phase3_stats = _run_phase3(ns, verbose=verbose)
-            verify_backbone_hits_unchanged_v11(
-                backbone_snapshot,
-                hit_timestamps=ns["hit_timestamps"],
-                stage_name="Phase 3 (small-cluster matrix)",
-            )
+            if skip_phase3:
+                if postpass and postpass != "none":
+                    raise ValueError(
+                        "skip_phase3=True requires postpass='none': the v0.1 "
+                        "post-pass runs on Phase 3 output."
+                    )
+                # Backbone-only quick test: freeze the pipeline at the post-V2
+                # state.  hit_timestamps_post_phase3 (and the NPZ -> .pt chain)
+                # then reflect front stage + Phase 2 + V2 only.  The vanilla
+                # path's post-Phase-3 verify is the only backbone check after
+                # V2, so keep it here (it is Phase-3-independent).
+                verify_backbone_hits_unchanged_v11(
+                    backbone_snapshot,
+                    hit_timestamps=ns["hit_timestamps"],
+                    stage_name="V2 light rescue (Phase 3 skipped)",
+                )
+                phase3_stats = {
+                    "skipped": True,
+                    "elapsed_s": 0.0,
+                    "n_proposed": 0,
+                    "n_assigned": 0,
+                    "n_remaining_unassigned": int(
+                        sum(len(v) for v in ns["unassigned_by_tpc"].values())
+                    ),
+                }
+            else:
+                phase3_stats = _run_phase3(ns, verbose=verbose)
+                verify_backbone_hits_unchanged_v11(
+                    backbone_snapshot,
+                    hit_timestamps=ns["hit_timestamps"],
+                    stage_name="Phase 3 (small-cluster matrix)",
+                )
 
             # ---- optional v0.1 post-pass: spatial-guided family assignment ----
             # Runs before the final snapshot so hit_timestamps_post_phase3 (and
@@ -676,6 +704,7 @@ def run_batch_optimized(
     event_stride: int = 1,
     event_offset: int = 0,
     postpass: str = "none",
+    skip_phase3: bool = False,
 ) -> dict[str, Any]:
     fs_config = fs_config or build_default_first_stage_config()
     v2_config = v2_config or build_default_v2_config()
@@ -775,6 +804,7 @@ def run_batch_optimized(
                 out_dir=out_dir_p,
                 verbose=verbose,
                 postpass=postpass,
+                skip_phase3=skip_phase3,
             )
             if report.ok:
                 n_ok += 1
@@ -882,8 +912,43 @@ def main(argv: list[str] | None = None) -> int:
                              "guided, remove-and-rescore base); 'v0.1-rg' = "
                              "cosine region-grow. Default 'none' = baseline "
                              "vAlpha, bit-identical to previous releases.")
+    parser.add_argument("--skip-phase3", action="store_true",
+                        help="backbone-only quick test: stop after V2 light "
+                             "rescue; the Phase 3 small-cluster matrix "
+                             "association is skipped and the exported "
+                             "post-phase3 arrays equal the post-V2 state.")
+    parser.add_argument("--predict-min-energy-mev", type=float, default=None,
+                        help="skip perceiver image prediction for single-TPC "
+                             "non-backbone clusters with E <= this many MeV "
+                             "(they can only be matched by Phase 3, so this "
+                             "is a pure GPU-time saving when paired with "
+                             "--skip-phase3).  Default: off (predict all).")
+    parser.add_argument("--refine-intersections", action="store_true",
+                        help="opt-in clustering intersection refinement: "
+                             "relabel hits at track/cluster and track/track "
+                             "crossings so tracks keep an approximately "
+                             "uniform MeV/cm linear density through them "
+                             "(soft-capped; structure-preserving).  Default: "
+                             "off = vanilla clustering.")
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args(argv)
+
+    if args.skip_phase3 and args.postpass != "none":
+        parser.error("--skip-phase3 requires --postpass none "
+                     "(the v0.1 post-pass runs on Phase 3 output).")
+    if args.predict_min_energy_mev is not None:
+        if not args.skip_phase3:
+            parser.error("--predict-min-energy-mev requires --skip-phase3: "
+                         "filtered clusters get no predicted images, so "
+                         "Phase 3 would silently skip them instead of "
+                         "matching them.")
+        if float(args.predict_min_energy_mev) > float(V11_LARGE_CLUSTER_ENERGY_MEV):
+            parser.error(f"--predict-min-energy-mev must be <= "
+                         f"{V11_LARGE_CLUSTER_ENERGY_MEV:g}: Phase 2 treats "
+                         f"single-TPC clusters with E > "
+                         f"{V11_LARGE_CLUSTER_ENERGY_MEV:g} MeV as primaries, "
+                         f"so a larger cut would silently drop genuine "
+                         f"Phase-2 primaries from the scan.")
 
     files = _expand_files(args.files)
     if int(args.max_files) > 0:
@@ -893,6 +958,10 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     fs_cfg = build_default_first_stage_config()
+    if args.predict_min_energy_mev is not None:
+        fs_cfg.prediction.min_cluster_energy_mev = float(args.predict_min_energy_mev)
+    if args.refine_intersections:
+        fs_cfg.clustering.intersection_refine_enable = True
     v2_cfg = build_default_v2_config(
         n_outer_passes=int(args.n_outer_passes),
         light_max_total_moves=int(args.max_total_moves),
@@ -915,6 +984,7 @@ def main(argv: list[str] | None = None) -> int:
         event_stride=int(args.event_stride),
         event_offset=int(args.event_offset),
         postpass=str(args.postpass),
+        skip_phase3=bool(args.skip_phase3),
     )
     return 0 if res["n_err"] == 0 else 1
 

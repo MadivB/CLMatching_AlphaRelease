@@ -91,6 +91,70 @@ spatial pattern alone), which is why its worst-case regression is 6× smaller.
 Assigned-hit fraction is unchanged (98.85%) — v0.1 only *moves* assigned blobs.
 Post-pass cost is negligible (~7–11 s on a ~9 min event).
 
+### ND v0.1 backbone-only quick test
+
+For iterating on the stages *before* the Phase 3 small-cluster error-matrix
+association, use the backbone-only launcher:
+
+```bash
+# on a GPU node (salloc as usual):
+bash scripts/run_backbone_only.sh [/path/to/file.FLOW.hdf5]
+```
+
+It wraps `run_v_alpha_test_pt_one_file.sh` with two new opt-in flags on the
+`M5p1.phase25_trial2_v_alpha_test` CLI:
+
+| flag | effect |
+|---|---|
+| `--skip-phase3` | stop after V2 light rescue; Phase 3 (and any `--postpass`) never runs. The NPZ keeps its full schema with `hit_timestamps_post_phase3 == hit_timestamps_post_v2`. |
+| `--predict-min-energy-mev 50` | skip perceiver image prediction for clusters that only Phase 3 could match: single-TPC, non-backbone (label ≥ split_index) clusters with E ≤ 50 MeV. Backbone track/shower labels and multi-TPC clusters are always predicted, so the front stage + Phase 2 + V2 see exactly the images they would in a full run. Only valid together with `--skip-phase3` (enforced — if Phase 3 ran, it would silently skip the filtered clusters instead of matching them), and must be ≤ 50 (enforced — Phase 2 treats single-TPC clusters with E > 50 MeV as primaries). |
+
+Launcher knobs: `PREDICT_MIN_E_MEV` (default 50; empty string = predict all
+clusters), `OUT_DIR` (default `output/backbone_only_e<threshold>/`, one
+directory per threshold — completed events are skipped via their ok-JSONs, so
+never re-run a different configuration into the same directory; force
+recomputation with `EXTRA_ARGS="--no-skip-existing"`), plus everything
+`run_v_alpha_test_pt_one_file.sh` already accepts (`FILE`, `N_GPUS`,
+`N_WORKERS_PER_GPU`, `PY`, ...).  Aggregation defaults to `SKIP_AGGREGATE=1`
+because the aggregator writes Mode-A flow files back **in-place** — don't feed
+partial quick-test results into a real file (opt in with `SKIP_AGGREGATE=0`).
+
+Both flags default to off; without them the module is bit-identical to the
+released v0.1 behavior.
+
+### Clustering intersection refinement (opt-in, experimental)
+
+`--refine-intersections` (launcher: `REFINE_INTERSECTIONS=1`) enables a
+post-clustering pass ([`M5p1/first_stage_matching/intersection_refine.py`](M5p1/first_stage_matching/intersection_refine.py))
+that improves hit assignment where structures cross, on the principle that a
+track should keep an approximately uniform MeV/cm linear density along its
+axis:
+
+- **track × cluster/shower**: inside the geometric contact window the track
+  may run up to `ir_soft_factor` (1.5×) above its own baseline density; only
+  the excess above that soft cap is shed to the cloud, halo-first, with a
+  per-bin hard floor at 1.0× baseline (a track can never be severed or
+  drained). Endpoint windows are skipped by default (Bragg-peak guard;
+  `ir_endpoint_soft_factor=3.0` opts into bounded shedding there).
+- **track × track** (different labels): crossing-window hits are first
+  geometrically pinned (stage-2.5 scoring against context-fit models, large
+  0.35 margin), then the truly-ambiguous remainder is apportioned so both
+  tracks continue through the crossing at the same level relative to their
+  own baselines; the donor never drops below 1.0× its baseline continuation,
+  and a new-gap veto rolls back any pair that would sever a track.
+
+Hits move only between existing labels, only inside detected intersection
+windows, at most once per hit; noise (`-1`) is untouched; no label is
+created, renumbered, or retyped; the pass is deterministic and its worst
+case is bounded near vanilla (energy caps, pair caps, commit-time invariant
+checks with automatic fallback). Track-ends-on-track contacts are vetoed by
+the same Bragg guard (`ir_endpoint_guard_cm`) — apportioning there would
+strip a stopping track's dE/dx rise. Knobs live on `ClusteringConfig`
+(`intersection_refine_*` / `ir_*`); stats land in
+`ClusteringResult.debug["intersection_refinement"]`. Measured on a 176k-hit
+MiniProdN5p1 event: ~0.35 s (vs ~70 s clustering), ~470 hits (0.3%)
+re-assigned across ~30 active crossings.
+
 ## Quick start (any machine, any path)
 
 ```bash
