@@ -369,6 +369,16 @@ def load_perceiver_model(
     if any(k.startswith("module.") for k in state.keys()):
         state = {k[len("module."):]: v for k, v in state.items()}
 
+    # arch-aware loading: checkpoints from train_ndfull_small.py carry an
+    # "arch" dict (base_channels/embed_dim/num_decoder_layers); use it when
+    # present so smaller networks load transparently (production ckpts have
+    # no "arch" -> defaults unchanged).
+    arch = ck_meta.get("arch") if isinstance(ck_meta, dict) else None
+    if arch:
+        base_channels = int(arch.get("base_channels", base_channels))
+        embed_dim = int(arch.get("embed_dim", embed_dim))
+        num_decoder_layers = int(arch.get("num_decoder_layers", num_decoder_layers))
+
     model = HybridPerceiver3D(
         c_in=1, base_channels=base_channels, embed_dim=embed_dim,
         num_targets=num_targets, num_tpcs=num_tpcs,
