@@ -195,7 +195,7 @@ class TrackStageConfig:
     adc_clip: float = 60780.0
     waveform_len: int = 1000
     t0_resolution: int = 5
-    search_range: int = 800
+    search_range: int = 895
     scan_mode: str = "correlation"  # "correlation" is fast unit-std, "exact" matches notebook loop.
     unit_scan_engine: str = "fft"  # "fft" is fastest for the fixed 1000-tick unit-std scan; "numpy" is fallback.
     print_track_assignments: bool = False

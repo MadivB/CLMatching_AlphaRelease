@@ -1007,7 +1007,7 @@ def _fit_track_base_on_selected_labels(
         if hit_timestamps_hint is not None and labels_global_full is not None:
             hint_mask = (np.asarray(labels_global_full, dtype=np.int32) == int(clusterid)) & np.isfinite(np.asarray(hit_timestamps_hint, dtype=np.float64))
             if np.any(hint_mask):
-                hinted_t0 = int(np.clip(np.rint(np.median(np.asarray(hit_timestamps_hint, dtype=np.float64)[hint_mask])), 0, 800))
+                hinted_t0 = int(np.clip(np.rint(np.median(np.asarray(hit_timestamps_hint, dtype=np.float64)[hint_mask])), 0, 895))
 
         decision = None
         if (
@@ -1028,7 +1028,7 @@ def _fit_track_base_on_selected_labels(
                 energies=np.asarray(energies_selected, dtype=np.float64),
                 label_info=label_info_selected,
                 channel_support_cache=channel_support_cache,
-                search_range=800,
+                search_range=895,
                 adc_clip=ADC_CLIP,
                 t0_resolution=T0_RESOLUTION,
                 waveform_len=WVFM_LEN,
@@ -1055,7 +1055,7 @@ def _fit_track_base_on_selected_labels(
                 base=tpc_base_fit,
                 actual=tpc_actual_fit,
                 error_metric=tpc_std_fit,
-                search_range=800,
+                search_range=895,
             )
             raw_t0 = int(shifts[int(np.argmin(errors))])
             newt0 = int(raw_t0)
@@ -1123,7 +1123,7 @@ def _candidate_t0s_from_residual_profile(
         peaks = [int(v) for v in coarse_peaks]
     t0s = []
     for peak in peaks:
-        t0 = int(np.clip(int(peak) - int(pulse_peak_tick), 0, 800))
+        t0 = int(np.clip(int(peak) - int(pulse_peak_tick), 0, 895))
         if all(abs(int(t0) - int(prev)) > int(min_sep_ticks) for prev in t0s):
             t0s.append(int(t0))
     return sorted(int(v) for v in t0s)
@@ -1348,7 +1348,7 @@ def _refine_family_t0s(
                 ).astype(np.float32)
             current_t0 = int(family["t0"])
             grid = [
-                int(np.clip(current_t0 + delta, 0, 800))
+                int(np.clip(current_t0 + delta, 0, 895))
                 for delta in range(-int(search_half_window), int(search_half_window) + 1)
             ]
             grid = sorted(set(grid))

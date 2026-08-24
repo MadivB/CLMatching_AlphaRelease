@@ -655,7 +655,7 @@ def assign_small_clusters_v4(
     collective_beam_width: int = 6,
     collective_relax_iterations: int = 3,
     collective_relax_eps: float = 2e-4,
-    search_range: int = 800,
+    search_range: int = 895,
     adc_clip: float = 60780.0,
     collect_scan_losses: bool = False,
     debug_tpcs: list[int] | None = None,

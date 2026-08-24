@@ -95,7 +95,7 @@ def main():
     cand = [[] for _ in range(8)]
 
     # ---- 2. tracks ----
-    print(f"\n[2] STAGE 4 — TRACK t0 (full scan over [0,700], peak-snap):")
+    print(f"\n[2] STAGE 4 — TRACK t0 (full scan over [0,895], peak-snap):")
     for cid in range(track_id_max + 1):
         if cid not in cluster_to_tpcs:
             continue
@@ -104,7 +104,7 @@ def main():
         b = np.concatenate([base[t] for t in tpcs], 0)
         a = np.concatenate([ev.fullLightWaveform[t] for t in tpcs], 0)
         v = np.concatenate([ev.fullLightVar[t] for t in tpcs], 0)
-        shifts, errs = match.full_integer_scan(img, b, a, v, 700)
+        shifts, errs = match.full_integer_scan(img, b, a, v, 895)
         free_t0 = float(shifts[int(np.argmin(errs))])
         # candidate flash seeds across the track's TPCs (the real association set)
         seedset = match._merge_close(
@@ -163,7 +163,7 @@ def main():
                     how = "max matched-filter"
             else:
                 shifts, errs = match.full_integer_scan(
-                    img, base[tpc], ev.fullLightWaveform[tpc], ev.fullLightVar[tpc], 700, sup)
+                    img, base[tpc], ev.fullLightWaveform[tpc], ev.fullLightVar[tpc], 895, sup)
                 chosen = float(shifts[int(np.argmin(errs))])
                 how = "free chi2 scan"
             res_ns = (tr - chosen) * NS

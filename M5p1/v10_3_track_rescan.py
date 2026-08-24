@@ -15,7 +15,7 @@ def max_likelihood_curve_with_base_v10_3(
     actual: np.ndarray,
     error_metric: np.ndarray,
     *,
-    search_range: int = 800,
+    search_range: int = 895,
     adc_clip: float = 60780.0,
 ) -> tuple[np.ndarray, np.ndarray]:
     pred = np.asarray(predicted, dtype=np.float32)
@@ -74,7 +74,7 @@ def run_track_second_pass_rescan_v10_3(
     channel_support_cache: dict[tuple[int, int], dict[str, Any]] | None,
     cluster_full_scan_loss_dict: dict[int, dict[str, Any]] | None = None,
     absorbed_hit_parent: np.ndarray | None = None,
-    search_range: int = 800,
+    search_range: int = 895,
     adc_clip: float = 60780.0,
     t0_resolution: int = 5,
     waveform_len: int = 1000,

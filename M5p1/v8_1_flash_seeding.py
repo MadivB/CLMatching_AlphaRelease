@@ -95,7 +95,7 @@ def extract_flash_t0_candidates_from_table(
     *,
     h5_file: Any,
     eventid: int,
-    search_range: int = 800,
+    search_range: int = 895,
     max_new_per_tpc: int | None = None,
     t0_resolution: int = 5,
     flash_tick_divisor: float = 16.0,
@@ -207,7 +207,7 @@ def merge_flash_t0_candidates_after_primary(
     t0_candidates: list[list[int]],
     flash_seed_t0s_by_tpc: dict[int, list[int]] | None,
     candidate_min_sep: int = 5,
-    max_t0: int = 800,
+    max_t0: int = 895,
 ) -> tuple[list[list[int]], dict[int, list[int]], dict[str, Any]]:
     if not flash_seed_t0s_by_tpc:
         return t0_candidates, {}, {
@@ -305,7 +305,7 @@ def candidate_t0s_from_residual(
     existing_candidates: list[int],
     *,
     max_new: int = 2,
-    search_range: int = 800,
+    search_range: int = 895,
     pulse_peak_tick: int = 105,
     t0_resolution: int = 5,
     peak_fraction: float = 0.30,
@@ -346,7 +346,7 @@ def seed_t0_candidates_from_flash_residual(
     base_image: np.ndarray,
     full_light_waveform: np.ndarray,
     t0_candidates: list[list[int]],
-    search_range: int = 800,
+    search_range: int = 895,
     max_new_per_tpc: int = 2,
     pulse_peak_tick: int = 105,
     t0_resolution: int = 5,

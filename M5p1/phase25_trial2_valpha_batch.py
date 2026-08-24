@@ -272,7 +272,7 @@ def _build_namespace(fs_result, h5: h5py.File, fs_config: FirstStageConfig) -> d
             ns["t0Candidates"],
             fs_result.track_stage.assignment_info,
             resolution_ticks=float(T0_RESOLUTION),
-            max_t0=800.0,
+            max_t0=895.0,
             initial_flags=None,
             prefer_existing_true=False,
         )
@@ -366,7 +366,7 @@ def _run_phase2(ns: dict[str, Any], *, verbose: bool = False) -> None:
         cluster_energies=cluster_energies,
         large_cluster_energy_mev=V11_LARGE_CLUSTER_ENERGY_MEV,
         minimum_iterative_energy_mev=V11_MINIMUM_ITERATIVE_ENERGY_MEV,
-        search_range=800,
+        search_range=895,
         adc_clip=ADC_CLIP,
         collect_scan_losses=RETURN_FULL_SCAN_LOSSES,
         assignment_improvement_eps=V11_PRIMARY_ASSIGNMENT_IMPROVEMENT_EPS,

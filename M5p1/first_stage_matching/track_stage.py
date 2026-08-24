@@ -85,7 +85,7 @@ def image_updater(new_image: np.ndarray, base_image: np.ndarray, sorted_tpcs: np
     return base_image
 
 
-def append_candidate_t0(candidate_list: list[int], t0: float, *, min_sep: int = 2, max_t0: int = 800) -> bool:
+def append_candidate_t0(candidate_list: list[int], t0: float, *, min_sep: int = 2, max_t0: int = 895) -> bool:
     value = int(np.clip(np.rint(float(t0)), 0, int(max_t0)))
     for existing in candidate_list:
         if abs(int(existing) - value) <= int(min_sep):
@@ -296,7 +296,7 @@ def refine_t0_from_local_peak(
     if stop > start:
         actual_peak = start + int(np.argmax(signal_1d[start:stop]))
         new_t0 += int(actual_peak - expected_peak)
-    return int(np.clip(new_t0, 0, 800))
+    return int(np.clip(new_t0, 0, 895))
 
 
 def run_track_shower_stage(

@@ -311,7 +311,7 @@ def _maybe_canonicalize_flash_table(
         tpc=int(tpc),
         t0=float(new_t0),
         resolution_ticks=float(cfg.light_flash_cluster_match_ticks),
-        max_t0=800.0,
+        max_t0=895.0,
         prefer_existing_true=False,
         clusterid=int(component_id),
         stage="trial2_v2_light_rescue",
@@ -687,7 +687,7 @@ def run_trial2_v2_light_rescue_from_namespace(
     t0_candidates = t2._get(namespace, "t0Candidates")
     if flash_cluster_received is not None:
         flash_cluster_received = ensure_flash_cluster_flags(
-            t0_candidates, flash_cluster_received, max_t0=800.0
+            t0_candidates, flash_cluster_received, max_t0=895.0
         )
         namespace["flash_cluster_received_by_tpc"] = flash_cluster_received
 

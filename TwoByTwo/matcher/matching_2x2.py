@@ -19,7 +19,7 @@ Phases (mirroring the ND vAlpha / v4-2x2 first stage):
                                     handful of SiPMs, so scoring all 48 buries
                                     its signal in noise;
                                 (b) faint blobs are matched to flash-seed / track
-                                    t0 candidates instead of a free 700-tick
+                                    t0 candidates instead of a free 895-tick
                                     scan that noise can capture.
   * refine_clusters         — Phase 8: per-cluster full scan + sub-tick refine.
 

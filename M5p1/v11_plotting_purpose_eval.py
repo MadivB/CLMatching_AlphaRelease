@@ -200,7 +200,7 @@ def max_likelihood_curve_with_base(
     base: np.ndarray,
     actual: np.ndarray,
     error_metric: np.ndarray,
-    search_range: int = 800,
+    search_range: int = 895,
 ) -> tuple[np.ndarray, np.ndarray]:
     pred = np.asarray(predicted, dtype=np.float32)
     base_ = np.asarray(base, dtype=np.float32)
@@ -238,7 +238,7 @@ def image_updater(new_image: np.ndarray, base_image: np.ndarray, sorted_tpcs: It
 
 
 def append_candidate_t0(candidate_list: list[int], t0: int, min_sep: int = 2) -> bool:
-    t0 = int(np.clip(np.rint(t0), 0, 800))
+    t0 = int(np.clip(np.rint(t0), 0, 895))
     for existing in candidate_list:
         if abs(int(existing) - t0) <= int(min_sep):
             return False
@@ -420,7 +420,7 @@ def _run_phase1_track_shower(
             base=tpc_base_fit,
             actual=tpc_actual_fit,
             error_metric=tpc_std_fit,
-            search_range=800,
+            search_range=895,
         )
         raw_t0 = int(shifts[int(np.argmin(errors))])
         newt0 = int(raw_t0)
@@ -519,7 +519,7 @@ def _run_phase1_track_shower(
         channel_support_cache=cluster_channel_support_cache,
         cluster_full_scan_loss_dict=cluster_full_scan_loss_dict,
         absorbed_hit_parent=v8_absorbed_hit_parent,
-        search_range=800,
+        search_range=895,
         adc_clip=ADC_CLIP,
         t0_resolution=T0_RESOLUTION,
         waveform_len=WVFM_LEN,
@@ -593,7 +593,7 @@ def _run_phase1_track_shower(
         max_passes=8,
         improvement_eps=0.0,
         adc_clip=ADC_CLIP,
-        search_range=800,
+        search_range=895,
         lock_swapped_clusters=True,
     )
     if verbose:
@@ -752,7 +752,7 @@ def run_v11_pipeline_for_event(
     flash_seed_t0s_by_tpc, flash_seed_stats = extract_flash_t0_candidates_from_table(
         h5_file=resources.h5,
         eventid=int(ev_id),
-        search_range=800,
+        search_range=895,
         max_new_per_tpc=None,
         t0_resolution=T0_RESOLUTION,
         flash_tick_divisor=16.0,
@@ -794,7 +794,7 @@ def run_v11_pipeline_for_event(
         cluster_energies=cluster_energies,
         large_cluster_energy_mev=50.0,
         minimum_iterative_energy_mev=0.5,
-        search_range=800,
+        search_range=895,
         adc_clip=ADC_CLIP,
         collect_scan_losses=False,
         assignment_improvement_eps=0.0,
@@ -837,7 +837,7 @@ def run_v11_pipeline_for_event(
         energy_band_fraction=0.20,
         positive_row_margin=-1e-4,
         matrix_worsen_tolerance_norm=0.15,
-        search_range=800,
+        search_range=895,
         adc_clip=ADC_CLIP,
         collect_scan_losses=False,
         full_scan_assign_eps=-1.0,

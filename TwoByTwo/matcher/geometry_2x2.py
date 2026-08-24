@@ -64,7 +64,7 @@ ORDERED_KEYS: List[Tuple[int, int]] = (
 PULSE_PEAK_TICK = 105     # avg_pulse.npy peaks here
 NS_PER_TICK = 16.0        # light digitiser sampling (derived from flash table)
 FLASH_T0_OFFSET = 5.0     # t0_seed = t_ns/NS_PER_TICK - FLASH_T0_OFFSET
-SEARCH_RANGE = 700        # t0 scan range [0, SEARCH_RANGE]
+SEARCH_RANGE = 895        # t0 scan range [0, SEARCH_RANGE]
 ADC_CLIP = 60780.0        # light ADC saturation cap used in chi2 model clip
 BASELINE_TICKS = 75       # ticks used for per-channel baseline / noise estimate
 

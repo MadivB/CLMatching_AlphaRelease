@@ -39,7 +39,7 @@ def unit_likelihood_curve_with_base_v1(
     base: np.ndarray,
     actual: np.ndarray,
     *,
-    search_range: int = 800,
+    search_range: int = 895,
     engine: Literal["auto", "fft", "numpy"] = "auto",
 ) -> tuple[np.ndarray, np.ndarray]:
     """

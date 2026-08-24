@@ -361,7 +361,7 @@ def run_large_cluster_flash_grid_correction_from_namespace(
     flash_cluster_received = ensure_flash_cluster_flags(
         t0_candidates,
         namespace.get("flash_cluster_received_by_tpc"),
-        max_t0=800.0,
+        max_t0=895.0,
     )
     flash_cluster_canonicalization_rows: list[dict[str, Any]] = []
 
@@ -454,7 +454,7 @@ def run_large_cluster_flash_grid_correction_from_namespace(
                     tpc=int(tpc),
                     t0=float(best_t0),
                     resolution_ticks=float(config.light_flash_cluster_match_ticks),
-                    max_t0=800.0,
+                    max_t0=895.0,
                     prefer_existing_true=False,
                     clusterid=int(cid),
                     stage="trial2_large_flash_grid",
@@ -1186,7 +1186,7 @@ def run_trial2_phase25_from_namespace(
 
     flash_cluster_received = namespace.get("flash_cluster_received_by_tpc", None)
     if flash_cluster_received is not None:
-        flash_cluster_received = ensure_flash_cluster_flags(t0_candidates, flash_cluster_received, max_t0=800.0)
+        flash_cluster_received = ensure_flash_cluster_flags(t0_candidates, flash_cluster_received, max_t0=895.0)
         flash_canonicalization_rows = list(large_result.get("flash_cluster_canonicalization_rows", []))
     else:
         # Fallback for older notebooks that do not yet carry the explicit
@@ -1595,7 +1595,7 @@ def run_trial2_phase25_from_namespace(
                             tpc=int(tpc),
                             t0=float(new_t0),
                             resolution_ticks=float(cfg.light_flash_cluster_match_ticks),
-                            max_t0=800.0,
+                            max_t0=895.0,
                             prefer_existing_true=False,
                             clusterid=int(trial.get("component_id", -1)),
                             stage="trial2_light_repair",

@@ -452,7 +452,7 @@ def assign_small_clusters_v8_intermediate_test(
     positive_row_margin: float = 1e-4,
     matrix_worsen_tolerance_norm: float = 0.15,
     full_scan_assign_eps: float = 0.0,
-    search_range: int = 800,
+    search_range: int = 895,
     adc_clip: float = 60780.0,
     collect_scan_losses: bool = False,
     assignment_improvement_eps: float = 0.0,

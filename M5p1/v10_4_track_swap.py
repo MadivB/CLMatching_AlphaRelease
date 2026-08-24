@@ -357,7 +357,7 @@ def run_track_swap_rescue_v10_4(
     max_passes: int = 6,
     improvement_eps: float = 0.0,
     adc_clip: float = 60780.0,
-    search_range: int = 800,
+    search_range: int = 895,
 ) -> tuple[
     np.ndarray,
     np.ndarray,

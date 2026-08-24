@@ -124,7 +124,7 @@ def _scan_window_loss(predicted_shifted, base, actual, std):
     return float(np.sum((model - actual) ** 2 / np.maximum(std, 1e-6)))
 
 
-def _full_integer_scan_loss(image, base, actual, std, search_range=700):
+def _full_integer_scan_loss(image, base, actual, std, search_range=895):
     """Returns (shifts, errors) for integer t0 in [0, search_range]."""
     n_ticks = image.size
     shifts = np.arange(int(search_range) + 1, dtype=np.int32)
@@ -162,7 +162,7 @@ def run_large_cluster_scan_phase(
     track_shower_labels=None,
     large_cluster_energy_mev=50.0,
     minimum_iterative_energy_mev=0.5,
-    search_range=700,
+    search_range=895,
     flash_seed_resolution_ticks=5,
     pulse_peak_tick=105,
     backward_align_ticks=5,
@@ -335,7 +335,7 @@ def run_small_cluster_matrix_phase(
     cluster_energies,
     energy_band_fraction=0.20,
     matrix_worsen_tolerance_norm=0.15,
-    search_range=700,
+    search_range=895,
     pulse_peak_tick=105,
     t0_resolution_ticks=5,
 ):

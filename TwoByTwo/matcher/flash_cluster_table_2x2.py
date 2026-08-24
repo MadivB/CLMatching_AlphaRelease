@@ -6,7 +6,7 @@ boolean flag: True iff at least one charge cluster has been assigned to that
 t0. The flag distinguishes "real PMT flash that received charge" from a
 track-derived t0 seed that was never matched to non-track charge.
 
-Adapted (simplified, no light<->charge remap, max_t0=700) from
+Adapted (simplified, no light<->charge remap, max_t0=895) from
 M5p1/flash_cluster_table.py.
 """
 

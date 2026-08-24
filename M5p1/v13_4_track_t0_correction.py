@@ -22,7 +22,7 @@ def _shift_stacked_image(image: np.ndarray, t0: float) -> np.ndarray:
     return timeinterpolation(np.asarray(image, dtype=np.float32), shift=float(t0), baseline=0.0).astype(np.float32)
 
 
-def _append_candidate_t0(candidate_list: list[int], t0: float, *, min_sep: int = 2, max_t0: int = 800) -> bool:
+def _append_candidate_t0(candidate_list: list[int], t0: float, *, min_sep: int = 2, max_t0: int = 895) -> bool:
     rounded = int(np.clip(np.rint(float(t0)), 0, int(max_t0)))
     for existing in candidate_list:
         if abs(int(existing) - rounded) <= int(min_sep):
@@ -140,7 +140,7 @@ def run_track_t0_fine_correction_v13_4(
         candidate_rows = []
         for offset in grid_offsets:
             candidate_t0 = float(old_t0 + float(offset))
-            if candidate_t0 < 0.0 or candidate_t0 > 800.0:
+            if candidate_t0 < 0.0 or candidate_t0 > 895.0:
                 continue
             shifted_fit = _shift_stacked_image(selected_wave, candidate_t0)
             model = np.clip(shifted_fit + selected_base, None, float(adc_clip))
@@ -183,7 +183,7 @@ def run_track_t0_fine_correction_v13_4(
                     t0_candidates[int(tpc)],
                     best_t0,
                     min_sep=int(candidate_min_sep),
-                    max_t0=800,
+                    max_t0=895,
                 )
                 key = (clusterid, int(tpc))
                 info = dict(assignment_info.get(key, {}))
