@@ -56,17 +56,25 @@ def _infer_template_peak(template: np.ndarray) -> float:
     return peak if peak > 0 else 1.0
 
 
+_CUPY_MOD = False   # False = not probed yet; None = unavailable
+
+
 def _get_xp(arr):
     """
     Return the array module (numpy or cupy) matching `arr`.
     Falls back to numpy if CuPy is unavailable or `arr` is a NumPy array.
+    A failed import is cached: retrying it per call rescans sys.path and
+    stats the filesystem thousands of times per event.
     """
-    try:
-        import cupy as cp  # type: ignore
-        if isinstance(arr, cp.ndarray):
-            return cp
-    except Exception:
-        pass
+    global _CUPY_MOD
+    if _CUPY_MOD is False:
+        try:
+            import cupy as cp  # type: ignore
+            _CUPY_MOD = cp
+        except Exception:
+            _CUPY_MOD = None
+    if _CUPY_MOD is not None and isinstance(arr, _CUPY_MOD.ndarray):
+        return _CUPY_MOD
     return np
 
 
