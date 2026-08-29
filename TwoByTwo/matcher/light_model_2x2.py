@@ -36,6 +36,18 @@ import ML_2x2_perceiver as _ml  # noqa: E402
 
 DEFAULT_SIM_CKPT = os.path.join(_C2L_DIR, "runs/2x2_run/best_model.pt")
 DEFAULT_DATA_CKPT = os.path.join(_C2L_DIR, "runs/2x2_data_run/best_model.pt")
+# DATA pulse template (built 2026-08-29 from 3927 clean july10_2024 single
+# flashes: baseline-subtracted, sub-tick aligned, peak-normalized, per-tick
+# median). The old template's tail does not describe 2x2 data pulses.
+_local_data_pulse = [
+    os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                 "..", "assets", "avg_pulse_data.npy"),
+    os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                 "templates", "avg_pulse_data.npy"),
+    "/pscratch/sd/y/yuxuan/2x2QLMatching/TOFStudy/avg_pulse_data.npy",
+]
+DEFAULT_DATA_PULSE_PATH = next((p for p in _local_data_pulse
+                                if os.path.exists(p)), _local_data_pulse[-1])
 DEFAULT_PULSE_PATH = (
     "/global/cfs/cdirs/dune/users/yuxuan/interactLevel/clusteringStudy/"
     "dataDrivenLUTtable/MLApproach/CNNApproach/avg_pulse.npy")
@@ -97,6 +109,9 @@ def load_light_model(mode: str = "sim", *, checkpoint: Optional[str] = None,
     """Convenience loader.  ``mode`` in {'sim', 'data'} picks the default ckpt."""
     if checkpoint is None:
         checkpoint = DEFAULT_DATA_CKPT if mode == "data" else DEFAULT_SIM_CKPT
+    if "pulse_path" not in kw or kw.get("pulse_path") in (None, ""):
+        kw["pulse_path"] = (DEFAULT_DATA_PULSE_PATH if mode == "data"
+                            else DEFAULT_PULSE_PATH)
     return LightModel2x2(checkpoint, device=device, **kw)
 
 

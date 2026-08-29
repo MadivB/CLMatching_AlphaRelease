@@ -63,7 +63,8 @@ for _p in (_MATCHER, _PERCEIVER, _VARMODEL):
 # light_model_2x2 reads C2L_DIR at import time for the perceiver + default ckpts.
 os.environ.setdefault("C2L_DIR", str(_PERCEIVER))
 
-_PULSE = _HERE / "assets" / "avg_pulse_2x2.npy"
+_PULSE_SIM = _HERE / "assets" / "avg_pulse_2x2.npy"
+_PULSE_DATA = _HERE / "assets" / "avg_pulse_data.npy"   # data-derived template (2026-08-29)
 _VARCKPT = _VARMODEL / "var_model_2x2.pt"
 
 
@@ -163,8 +164,9 @@ def main():
 
     # ---- one-time model load ----
     t0 = time.time()
+    pulse = _PULSE_DATA if args.mode == "data" else _PULSE_SIM
     light_model = lm.load_light_model(args.mode, device=args.device,
-                                      pulse_path=str(_PULSE))
+                                      pulse_path=str(pulse))
     var_wrapper = None
     cfg = _version_config(args.version, None)
     if cfg.get("tiebreak_variance_model", "sentinel") is None and \
