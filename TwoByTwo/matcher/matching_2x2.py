@@ -19,7 +19,7 @@ Phases (mirroring the ND vAlpha / v4-2x2 first stage):
                                     handful of SiPMs, so scoring all 48 buries
                                     its signal in noise;
                                 (b) faint blobs are matched to flash-seed / track
-                                    t0 candidates instead of a free 895-tick
+                                    t0 candidates instead of a free 700-tick
                                     scan that noise can capture.
   * refine_clusters         — Phase 8: per-cluster full scan + sub-tick refine.
 
@@ -55,12 +55,44 @@ def _chi2(model: np.ndarray, actual: np.ndarray, var: np.ndarray) -> float:
                   / np.maximum(var, 1e-6)).sum())
 
 
+# Predicted light shifted past the end of the recorded window leaves the
+# chi2 entirely, which makes boundary placements (t0 near SEARCH_RANGE)
+# artificially cheap: at t0=895 only the pulse rise is visible and a
+# no-evidence cluster can "hide" at the edge for almost nothing. The edge
+# penalty restores fair pricing by charging the hidden (out-of-window)
+# predicted light against the channel's quiet-tail variance, exactly what
+# it would cost if the window were long enough and stayed quiet. Interior
+# placements (hidden mass = 0) are untouched; a genuine late flash still
+# wins because its visible rise cancels a real observed peak.
+EDGE_PENALTY = True
+
+
+def _edge_penalty_csum(image, var):
+    """csum[k] = chi2 charge for the last k image columns falling outside
+    the window; penalty(t0) = csum[T - t0] (integer shifts)."""
+    T = image.shape[1]
+    nb = min(int(geo.BASELINE_TICKS), T)
+    vt = np.maximum(np.asarray(var, np.float32)[:, T - nb:].mean(axis=1), 1e-6)
+    w = (np.asarray(image, np.float32) ** 2 / vt[:, None]).sum(axis=0)
+    csum = np.zeros(T + 1, dtype=np.float32)
+    csum[:T] = np.cumsum(w[::-1])[::-1]
+    return csum
+
+
 def score_at(image, base, actual, var, t0, support=None) -> float:
     """chi2 of placing ``image`` at t0 on top of ``base`` (residual fit)."""
     shifted = shift_frac(image, t0)
     rows = slice(None) if support is None else support
-    model = base[rows] + shifted[rows]
-    return _chi2(model, actual[rows], var[rows])
+    chi = _chi2(base[rows] + shifted[rows], actual[rows], var[rows])
+    if EDGE_PENALTY and t0 > 0:
+        csum = _edge_penalty_csum(np.asarray(image)[rows],
+                                  np.asarray(var)[rows])
+        T = csum.size - 1
+        lo = int(np.floor(t0)); frac = float(t0) - lo
+        i0 = min(max(T - lo, 0), T)
+        i1 = min(max(T - lo - 1, 0), T)
+        chi += float((1.0 - frac) * csum[i0] + frac * csum[i1])
+    return chi
 
 
 def full_integer_scan(image, base, actual, var, search_range,
@@ -97,6 +129,9 @@ def full_integer_scan(image, base, actual, var, search_range,
     # window start = S - t0  =>  errors indexed by t0 are the reversed order
     shifts = np.arange(S + 1, dtype=np.int32)
     errs = errs_by_start[::-1].copy()
+    if EDGE_PENALTY:
+        csum = _edge_penalty_csum(image, var)
+        errs += csum[np.minimum(T - shifts, T).clip(0)]
     return shifts, errs
 
 

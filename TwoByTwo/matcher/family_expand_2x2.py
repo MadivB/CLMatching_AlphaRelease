@@ -73,7 +73,8 @@ def family_expand_association(*, labels, xset, yset, zset, Eset, hitTPCid, hit_t
                               support_fraction: float = 0.90, support_floor: float = 25.0,
                               try_next_neighbor: bool = True, max_outer: int = 2000,
                               adaptive_gap: bool = False, gap_k: float = 3.0,
-                              respect_greedy: bool = True
+                              respect_greedy: bool = True,
+                              use_base: bool = False
                               ) -> List[dict]:
     """respect_greedy=True (DEFAULT, required behavior): a cluster that already
     carries a greedy t0 assignment is FROZEN — it anchors a family at exactly
@@ -92,7 +93,16 @@ def family_expand_association(*, labels, xset, yset, zset, Eset, hitTPCid, hit_t
     if not ids:
         return []
 
-    # ---- candidate t0 set: flash seeds + track t0s only (cosine-free, physical) ----
+    # ---- frozen greedy anchors (computed early: they are also t0 candidates) ----
+    greedy_t0: Dict[int, float] = {}
+    if respect_greedy:
+        for c in ids:
+            t = hit_t0[labels == c]
+            t = t[np.isfinite(t) & (t >= 0)]
+            if t.size:
+                greedy_t0[c] = float(np.median(t))
+
+    # ---- candidate t0 set: flash seeds + track t0s + frozen-anchor t0s ----
     cand = set()
     for tp in range(len(flash_seeds)):
         for s in flash_seeds[tp]:
@@ -106,6 +116,8 @@ def family_expand_association(*, labels, xset, yset, zset, Eset, hitTPCid, hit_t
                 tt = float(np.median(t0s))
                 track_t0[c] = tt
                 cand.add(round(tt))
+    for v in greedy_t0.values():
+        cand.add(round(v))
     cand = sorted(cand)
     if not cand:
         return []
@@ -127,14 +139,18 @@ def family_expand_association(*, labels, xset, yset, zset, Eset, hitTPCid, hit_t
                    "E": float(cluster_energies.get(c, 0.0)), "track": c in track_set,
                    "cen": cen, "dir": direction, "lin": lin, "dim": dim}
 
-    # ---- error matrix: chi2(c, t) at base=0 over the cluster's support ----
+    # ---- error matrix: chi2(c, t) over the cluster's support channels.
+    # use_base=True scores against the RESIDUAL (base_image = already-placed
+    # light plateau) — the correct physics when earlier stages placed light;
+    # use_base=False is the legacy standalone base=0 behavior. ----
     def chi2_at(c: int, t: float, var_src) -> float:
         s, any_tp = 0.0, False
         for tp in info[c]["tpcs"]:
             if (c, tp) not in image_maps:
                 continue
-            z0 = np.zeros_like(full_wvfm[tp])
-            s += score_at(image_maps[(c, tp)], z0, full_wvfm[tp], var_src[tp],
+            b = (np.asarray(base_image[tp], np.float32) if use_base
+                 else np.zeros_like(full_wvfm[tp]))
+            s += score_at(image_maps[(c, tp)], b, full_wvfm[tp], var_src[tp],
                           t, info[c]["sup"].get(tp))
             any_tp = True
         return s if any_tp else np.inf
@@ -161,19 +177,7 @@ def family_expand_association(*, labels, xset, yset, zset, Eset, hitTPCid, hit_t
             d = _cluster_min_dist(info[a]["pts"], info[b]["tree"])
             D[a][b] = D[b][a] = d
 
-    # ---- greedy-frozen anchors (the REQUIRED rule): any cluster that already
-    # carries a greedy t0 is immutable — it anchors a family at exactly that
-    # value; family expansion may add unassigned neighbours to it but can
-    # NEVER change it. ----
-    greedy_t0: Dict[int, float] = {}
-    if respect_greedy:
-        for c in ids:
-            t = hit_t0[labels == c]
-            t = t[np.isfinite(t) & (t >= 0)]
-            if t.size:
-                greedy_t0[c] = float(np.median(t))
-
-    # ---- families ----
+    # ---- families (greedy_t0 anchors computed above are immutable) ----
     fam_of: Dict[int, Optional[int]] = {c: None for c in ids}
     families: List[dict] = []
     for c in ids:                              # tracks first, as fixed anchors

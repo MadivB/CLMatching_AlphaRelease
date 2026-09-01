@@ -64,7 +64,10 @@ ORDERED_KEYS: List[Tuple[int, int]] = (
 PULSE_PEAK_TICK = 105     # avg_pulse.npy peaks here
 NS_PER_TICK = 16.0        # light digitiser sampling (derived from flash table)
 FLASH_T0_OFFSET = 5.0     # t0_seed = t_ns/NS_PER_TICK - FLASH_T0_OFFSET
-SEARCH_RANGE = 895        # t0 scan range [0, SEARCH_RANGE]
+SEARCH_RANGE = 895        # t0 scan range [0, SEARCH_RANGE]; 895 = last t0 with
+                          # the full pulse peak (t0+105) inside the 1000-tick
+                          # window — recovers late (e.g. delayed n-capture)
+                          # flashes; A/B vs 700: efficiency unchanged (±0.1pp)
 ADC_CLIP = 60780.0        # light ADC saturation cap used in chi2 model clip
 BASELINE_TICKS = 75       # ticks used for per-channel baseline / noise estimate
 
@@ -122,6 +125,28 @@ def build_ordered_channel_index(lut: Dict[Tuple[int, int, int], Tuple[int, int]]
                 adc_idx[t, j], ch_idx[t, j] = lut[key]
     valid = adc_idx >= 0
     return adc_idx, ch_idx, valid
+
+
+def build_sipm_positions(h5) -> np.ndarray:
+    """(N_TPCS, N_CHANNELS, 3) SiPM centers [cm] in the charge frame, in
+    ORDERED_KEYS row order per TPC; NaN where the channel has no mapping."""
+    lut = build_sipm_lut(h5)
+    adc_idx, ch_idx, valid = build_ordered_channel_index(lut)
+    abs_meta = h5["geometry_info/sipm_abs_pos"].attrs["meta"]
+    abs_data = h5["geometry_info/sipm_abs_pos/data"]
+    sipm_abs = LUT.from_array(abs_meta, abs_data)
+    pos = np.full((N_TPCS, N_CHANNELS, 3), np.nan, dtype=np.float64)
+    for t in range(N_TPCS):
+        for j in range(N_CHANNELS):
+            if not valid[t, j]:
+                continue
+            try:
+                xyz = np.asarray(sipm_abs[(adc_idx[t, j], ch_idx[t, j])])[0]
+            except Exception:
+                continue
+            if not np.all(xyz == -1.0):
+                pos[t, j] = xyz
+    return pos
 
 
 def parse_dead_channels(yaml_path: str) -> set:
