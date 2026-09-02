@@ -402,12 +402,22 @@ def _masked_loss_matrix_single_tpc(
         current_errors[row_idx] = float(compute_error_metric(base_selected, actual_selected, error_selected))
 
         selected_block = np.asarray(selected_wave, dtype=np.float32)[None, :, :]
+        # vectorized over candidates (identical math to the per-candidate
+        # _shift_block loop: integer shifts are exact zero-filled rolls)
+        block = np.asarray(selected_block[0], dtype=np.float32)
+        n_t = block.shape[1]
+        stack = np.zeros((n_candidates,) + block.shape, dtype=np.float32)
         for col_idx, t0 in enumerate(t0_candidates):
-            shifted = _shift_block(selected_block, int(t0))[0]
-            candidate_model = np.clip(base_selected + shifted, None, float(adc_clip))
-            loss_matrix[row_idx, col_idx] = float(
-                compute_error_metric(candidate_model, actual_selected, error_selected)
-            )
+            t0i = int(t0)
+            if t0i == 0:
+                stack[col_idx] = block
+            elif 0 < t0i < n_t:
+                stack[col_idx, :, t0i:] = block[:, : n_t - t0i]
+        model = np.clip(base_selected[None, :, :] + stack, None, float(adc_clip))
+        err = np.maximum(np.asarray(error_selected, dtype=np.float32), 1e-6)
+        loss_matrix[row_idx, :] = (
+            np.square(model - np.asarray(actual_selected, dtype=np.float32)[None]) / err[None]
+        ).mean(axis=(1, 2), dtype=np.float64)
 
     return loss_matrix, current_errors, remaining_clusters
 
