@@ -31,7 +31,15 @@ import h5py
 T0_SENTINEL = -1.0
 CID_SENTINEL = -1
 CONF_UNAVAILABLE = 0.0  # matches the HDF5 t_confidence field's init default
-SCHEMA_VERSION = "qlmatch2x2.2"  # bumped: adds prompt_hit_t_confidence + final
+NS_PER_TICK = 16.0      # LArPix clock: 1 tick = 16 ns
+# Schema v0.3 (this file):
+#   * t_0 stored as NANOSECONDS (ticks*16), matching the ND clmatchND_v1 schema
+#     so apply_pt_to_hdf5.py (in ND_Production) can fill both detectors uniformly.
+#   * `calib_prompt_hits` and `calib_final_hits` nested dicts of {t_0, t_cluster_id,
+#     t_confidence} added alongside the legacy flat keys for schema parity with ND.
+#   * `t0_units: "ns"` and `ticks_per_ns: 16.0` metadata added; apply_pt_to_hdf5
+#     refuses to write a PT that doesn't declare these.
+SCHEMA_VERSION = "qlmatch2x2.3"
 _FINAL_TO_PROMPT_REF = "charge/calib_prompt_hits/ref/charge/calib_final_hits/ref"
 
 
@@ -126,7 +134,11 @@ def _aggregate_one(base: str, shards: list[Path], out_dir: Path,
                            "error": f"shape mismatch {hit_refs.size}!={ts.size}"})
             continue
         valid = np.isfinite(ts) & (ts >= 0)
-        calib_hit_t0_reco[hit_refs[valid]] = ts[valid]
+        # Convert ticks -> ns for storage. Pipeline emits `hit_timestamps` in
+        # ticks (see pipeline_2x2.py docstring: "assigns every hit a t0
+        # (matching ticks)"); the ndlar_flow t_0 field is float32 ns.
+        calib_hit_t0_reco[hit_refs[valid]] = (ts[valid].astype(np.float32)
+                                              * np.float32(NS_PER_TICK))
         n_assigned += int(valid.sum())
         if labels is not None and labels.size == hit_refs.size:
             lo, hi = np.iinfo(np.int16).min, np.iinfo(np.int16).max
@@ -167,7 +179,27 @@ def _aggregate_one(base: str, shards: list[Path], out_dir: Path,
         "algorithm": algo,
         "detector": "2x2",
         "input_file": str(src),
-        # per-prompt-hit
+        "src_basename": Path(src).name,
+        # units contract (matches ND clmatchND_v1)
+        "t0_units": "ns",
+        "ticks_per_ns": NS_PER_TICK,
+        # ---- HDF5-fill schema (nested dicts; apply_pt_to_hdf5.py reads these) ----
+        # sizes: prompt = n_calib_hits, final = n_calib_final_hits
+        "calib_prompt_hits": {
+            "t_0": torch.from_numpy(calib_hit_t0_reco),           # float32 ns
+            "t_cluster_id": torch.from_numpy(prompt_hit_cluster_id),  # int16
+            "t_confidence": torch.from_numpy(prompt_hit_t_confidence),  # float32
+        },
+        "calib_final_hits": {
+            "t_0": torch.from_numpy(final_t0),
+            "t_cluster_id": torch.from_numpy(final_cluster),
+            "t_confidence": torch.from_numpy(final_confidence),
+        },
+        "n_calib_prompt_hits": int(n_prompt),
+        "n_prompt_assigned": int(n_assigned),
+        "n_calib_final_hits": int(n_final),
+        "n_final_assigned": int(n_final_assigned),
+        # ---- legacy flat keys kept for backward compat with earlier 2x2 consumers ----
         "calib_hit_t0_reco": torch.from_numpy(calib_hit_t0_reco),
         "prompt_hit_t_cluster_id": torch.from_numpy(prompt_hit_cluster_id),
         "prompt_hit_t_confidence": torch.from_numpy(prompt_hit_t_confidence),
@@ -176,7 +208,6 @@ def _aggregate_one(base: str, shards: list[Path], out_dir: Path,
         "n_calib_hits": int(n_prompt),
         "n_assigned": int(n_assigned),
         "n_unassigned": int(n_prompt - n_assigned),
-        # per-merged-hit
         "calib_final_hit_t0_reco": torch.from_numpy(final_t0),
         "calib_final_hit_cluster_id": torch.from_numpy(final_cluster),
         "calib_final_hit_t_confidence": torch.from_numpy(final_confidence),
