@@ -28,9 +28,14 @@ import numpy as np
 import torch
 import h5py
 
-T0_SENTINEL = -1.0
-CID_SENTINEL = -1
-CONF_UNAVAILABLE = 0.0  # matches the HDF5 t_confidence field's init default
+# Uniform sentinel -10000 for all three writeback fields (t_0, t_cluster_id,
+# t_confidence). Unphysical for all of them so we can safely distinguish
+# "CL matching ran and this hit was unassigned" from the pre-CL-matching
+# HDF5 default of 0. Matches clmatchND_v1's convention.
+UNASSIGNED = -10000
+T0_SENTINEL = float(UNASSIGNED)
+CID_SENTINEL = int(UNASSIGNED)
+CONF_UNAVAILABLE = float(UNASSIGNED)
 NS_PER_TICK = 16.0      # LArPix clock: 1 tick = 16 ns
 # Schema v0.3 (this file):
 #   * t_0 stored as NANOSECONDS (ticks*16), matching the ND clmatchND_v1 schema
@@ -183,6 +188,7 @@ def _aggregate_one(base: str, shards: list[Path], out_dir: Path,
         # units contract (matches ND clmatchND_v1)
         "t0_units": "ns",
         "ticks_per_ns": NS_PER_TICK,
+        "unassigned_sentinel": UNASSIGNED,
         # ---- HDF5-fill schema (nested dicts; apply_pt_to_hdf5.py reads these) ----
         # sizes: prompt = n_calib_hits, final = n_calib_final_hits
         "calib_prompt_hits": {
