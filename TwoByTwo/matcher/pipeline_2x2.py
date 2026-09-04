@@ -249,6 +249,55 @@ def run_pipeline_for_event(h5, ev_id: int, *, light_model,
               f"(tracks={track_id_max + 1}, blobs={n_clusters - track_id_max - 1}) "
               f"matched_hits={n_matched}")
 
+    # --------------------------------------------------------------------- #
+    # Post-pass: per-cluster matched-filter cos score at the accepted t0.
+    # Cheap (~1 call to matched_filter_at per (cluster, tpc)), non-invasive
+    # (no stage-code changes), and directly measures how well each placed
+    # cluster's predicted light pattern matches the observed residual once
+    # every other cluster's contribution is subtracted from the base image.
+    # cluster_cos[cid] ~ mean over the cluster's TPCs; scores are in [~0, 1]
+    # by construction. Used by aggregate_2x2_to_pt.py to fill t_confidence.
+    # --------------------------------------------------------------------- #
+    from matching_2x2 import matched_filter_at, shift_frac
+    cluster_cos: dict[int, float] = {}
+    if labels.size:
+        unique_labels = np.unique(labels[labels >= 0])
+        actual_lw = ev.fullLightWaveform
+        var_lw = ev.fullLightVar
+        for cid in unique_labels:
+            cid = int(cid)
+            if cid not in cluster_to_tpcs:
+                continue
+            hits_in_cluster = np.where(labels == cid)[0]
+            if hits_in_cluster.size == 0:
+                continue
+            t0_cid = float(hit_t0[hits_in_cluster[0]])
+            if not np.isfinite(t0_cid) or t0_cid < 0:
+                continue
+            cos_vals = []
+            for tp in cluster_to_tpcs[cid]:
+                tp_int = int(tp)
+                key = (cid, tp_int)
+                if key not in image_maps:
+                    continue
+                img = np.asarray(image_maps[key], dtype=np.float32)
+                try:
+                    own = shift_frac(img, t0_cid)
+                    base_others = np.clip(
+                        np.asarray(base_image[tp_int], dtype=np.float32) - own,
+                        0.0, None,
+                    )
+                    cos = matched_filter_at(img, base_others,
+                                            np.asarray(actual_lw[tp_int], dtype=np.float32),
+                                            np.asarray(var_lw[tp_int], dtype=np.float32),
+                                            t0_cid, None)
+                    if np.isfinite(cos):
+                        cos_vals.append(float(cos))
+                except Exception:
+                    continue
+            if cos_vals:
+                cluster_cos[cid] = float(np.mean(cos_vals))
+
     return {
         "ev_id": int(ev_id),
         "hit_timestamps": hit_t0,
@@ -259,6 +308,7 @@ def run_pipeline_for_event(h5, ev_id: int, *, light_model,
         "track_id_max": track_id_max,
         "track_labels": track_labels,
         "cluster_energies": cluster_energies,
+        "cluster_cos": cluster_cos,   # dict {cid: mean matched-filter cos in [0,1]}
         "cluster_to_tpcs": cluster_to_tpcs,
         "tpc_to_clusters": tpc_to_clusters,
         "t0_candidates": t0_candidates,

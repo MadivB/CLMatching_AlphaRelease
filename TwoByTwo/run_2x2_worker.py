@@ -237,11 +237,19 @@ def main():
                 tpcid = np.asarray(r["event"].hitTPCid, np.int64)
                 if labels.shape[0] != hit_refs.shape[0]:
                     labels = np.full(hit_refs.size, -1, np.int64)
+                # Per-cluster matched-filter cos in [0,1]; aggregator uses this
+                # to fill t_confidence. dict {cid: cos} -> two aligned arrays.
+                cos_dict = r.get("cluster_cos") or {}
+                cos_labels = np.asarray(sorted(cos_dict.keys()), dtype=np.int64)
+                cos_values = np.asarray([cos_dict[int(l)] for l in cos_labels],
+                                        dtype=np.float32)
                 np.savez_compressed(npz_path,
                                     hit_refs=hit_refs,
                                     hit_timestamps=hit_ts,
                                     labels=labels,
                                     hitTPCid=tpcid,
+                                    cluster_cos_labels=cos_labels,
+                                    cluster_cos_values=cos_values,
                                     ev_id=np.int64(ev_id), ok=np.int64(1))
                 with open(out_dir / f"{tag}.json", "w") as jf:
                     json.dump({"ok": True, "file": fp, "event_id": int(ev_id),
