@@ -30,7 +30,8 @@ import h5py
 
 T0_SENTINEL = -1.0
 CID_SENTINEL = -1
-SCHEMA_VERSION = "qlmatch2x2.1"
+CONF_UNAVAILABLE = 0.0  # matches the HDF5 t_confidence field's init default
+SCHEMA_VERSION = "qlmatch2x2.2"  # bumped: adds prompt_hit_t_confidence + final
 _FINAL_TO_PROMPT_REF = "charge/calib_prompt_hits/ref/charge/calib_final_hits/ref"
 
 
@@ -83,9 +84,21 @@ def _aggregate_one(base: str, shards: list[Path], out_dir: Path,
 
     calib_hit_t0_reco = np.full(n_prompt, T0_SENTINEL, dtype=np.float32)
     prompt_hit_cluster_id = np.full(n_prompt, CID_SENTINEL, dtype=np.int16)
+    # v0.2 schema: per-hit confidence. The 2x2 pipeline's stage E/F picks t0
+    # via an analytic quadratic minimum + edge penalty; it does not currently
+    # export a scalar quality score per assigned hit, so this field is a
+    # deliberately simple SUPPORT-SIZE PROXY: for each cluster we set
+    #   conf[i] = min(1.0, n_hits_in_cluster / SUPPORT_REF)
+    # for every hit i belonging to that cluster. Assigned-with-tiny-cluster
+    # -> low; assigned-in-big-cluster -> saturates at 1.0. This is NOT a
+    # calibrated purity like ND's pcu_vote10 (see conf_v093.py); it's a
+    # placeholder honest enough to fill the reserved t_confidence field and
+    # be replaced by a stage-E scan-margin-derived signal later.
+    prompt_hit_t_confidence = np.full(n_prompt, CONF_UNAVAILABLE, dtype=np.float32)
 
     processed, summaries, failed = [], [], []
     n_assigned = 0
+    SUPPORT_REF = 20.0  # ~median cluster size on Tutorial.flow; conf saturates here
     for npz in sorted(shards):
         jp = Path(str(npz).replace(".npz", ".json"))
         meta = {}
@@ -118,6 +131,18 @@ def _aggregate_one(base: str, shards: list[Path], out_dir: Path,
         if labels is not None and labels.size == hit_refs.size:
             lo, hi = np.iinfo(np.int16).min, np.iinfo(np.int16).max
             prompt_hit_cluster_id[hit_refs] = np.clip(labels, lo, hi).astype(np.int16)
+            # Support-size confidence: per-cluster hit count, saturated to
+            # SUPPORT_REF, applied to every ASSIGNED hit in that cluster.
+            uniq, counts = np.unique(labels[labels >= 0], return_counts=True)
+            if uniq.size:
+                cluster_conf = np.minimum(1.0, counts.astype(np.float32) / SUPPORT_REF)
+                lab_to_conf = dict(zip(uniq.tolist(), cluster_conf.tolist()))
+                per_hit_conf = np.array(
+                    [lab_to_conf.get(int(l), CONF_UNAVAILABLE) if v else CONF_UNAVAILABLE
+                     for l, v in zip(labels, valid)],
+                    dtype=np.float32,
+                )
+                prompt_hit_t_confidence[hit_refs] = per_hit_conf
         ev_id = int(meta.get("event_id", d["ev_id"]) if "ev_id" in d.files else meta.get("event_id", -1))
         processed.append(ev_id)
         summaries.append({"event_id": ev_id, "n_hits": int(hit_refs.size),
@@ -130,9 +155,11 @@ def _aggregate_one(base: str, shards: list[Path], out_dir: Path,
         n_final = int(h["charge/calib_final_hits/data"].shape[0])
     final_t0 = np.full(n_final, T0_SENTINEL, dtype=np.float32)
     final_cluster = np.full(n_final, CID_SENTINEL, dtype=np.int16)
+    final_confidence = np.full(n_final, CONF_UNAVAILABLE, dtype=np.float32)
     in_range = (prompt_idx >= 0) & (prompt_idx < n_prompt)
     final_t0[in_range] = calib_hit_t0_reco[prompt_idx[in_range]]
     final_cluster[in_range] = prompt_hit_cluster_id[prompt_idx[in_range]]
+    final_confidence[in_range] = prompt_hit_t_confidence[prompt_idx[in_range]]
     n_final_assigned = int(np.count_nonzero((final_t0 != T0_SENTINEL) & np.isfinite(final_t0) & (final_t0 >= 0)))
 
     out = {
@@ -143,12 +170,16 @@ def _aggregate_one(base: str, shards: list[Path], out_dir: Path,
         # per-prompt-hit
         "calib_hit_t0_reco": torch.from_numpy(calib_hit_t0_reco),
         "prompt_hit_t_cluster_id": torch.from_numpy(prompt_hit_cluster_id),
+        "prompt_hit_t_confidence": torch.from_numpy(prompt_hit_t_confidence),
+        "confidence_source": "support-size proxy (min(1, n_hits/SUPPORT_REF))",
+        "confidence_support_ref": SUPPORT_REF,
         "n_calib_hits": int(n_prompt),
         "n_assigned": int(n_assigned),
         "n_unassigned": int(n_prompt - n_assigned),
         # per-merged-hit
         "calib_final_hit_t0_reco": torch.from_numpy(final_t0),
         "calib_final_hit_cluster_id": torch.from_numpy(final_cluster),
+        "calib_final_hit_t_confidence": torch.from_numpy(final_confidence),
         "calib_final_hit_prompt_index": torch.from_numpy(prompt_idx.astype(np.int64)),
         "calib_final_hit_source": ("derived from calib_hit_t0_reco via "
                                    + _FINAL_TO_PROMPT_REF + "[:,0]"),
