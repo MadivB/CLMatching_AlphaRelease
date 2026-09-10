@@ -72,6 +72,20 @@ term linear in pulse amplitude** added as one extra column.
 the radon walk fit on data; sim uses its own effective value), walk is
 **`~amp` (linear in kADC)** and never `~1/amp`.
 
+**Two calibration paths for the constants (important):**
+* **DATA:** radon alphas are the primary source (true point sources);
+  beam muons provide the independent cross-check (k_j corr 0.60).
+* **SIMULATION:** no radon alphas exist. There the constants are
+  **self-calibrated on the muon sample itself**: the same joint solve,
+  but each muon contributes ONE free `t_start` (nuisance) and `v = c`
+  ties all its segments to that single clock — a muon is a point source
+  with a known internal schedule. One muon constrains ~20-48 channels
+  while adding one unknown, so shared k_j + walk stay over-determined.
+  Fitted this way, sim walk is ~0.03 ns/kADC (essentially zero — the
+  sim optical/electronics chain has no discriminator walk); the
+  2.0 ns/kADC walk is a real-data phenomenon. Constants must be re-fit
+  per dataset, never copied from sim to data or vice versa.
+
 ---
 
 ## 2. Step 3 — The point-wise muon fit (moving point source)
