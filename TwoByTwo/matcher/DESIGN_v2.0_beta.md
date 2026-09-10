@@ -72,6 +72,18 @@ term linear in pulse amplitude** added as one extra column.
 the radon walk fit on data; sim uses its own effective value), walk is
 **`~amp` (linear in kADC)** and never `~1/amp`.
 
+**MicroBooNE provenance of the walk term (and why c_LAr = 7.9, not
+13.4):** the walk column is our adaptation of MicroBooNE's empirical
+correction `T_Emp = a1*(propagation) + b1*N_Ph` (arXiv:2304.02076). We
+carry the photon-count piece explicitly (amplitude as the N_Ph proxy);
+the `a1*prop` piece is exactly degenerate with `1/c_LAr` once velocity
+is fixed, so it is ABSORBED into the fitted effective `c_LAr` — which
+is why our calibrated 7.90 cm/ns is an *effective* propagation constant
+and differs from the textbook group velocity (~13.4 cm/ns). Mapping to
+their formalism: T_os <-> k_j; b1*N_Ph <-> walk*amp; a1*prop <-> folded
+into effective c_LAr; median-over-PMTs <-> robust weighted median over
+channels.
+
 **Two calibration paths for the constants (important):**
 * **DATA:** radon alphas are the primary source (true point sources);
   beam muons provide the independent cross-check (k_j corr 0.60).
