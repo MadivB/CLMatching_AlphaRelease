@@ -250,7 +250,32 @@ def run_pipeline_for_event(h5, ev_id: int, *, light_model,
               f"matched_hits={n_matched}")
 
     # --------------------------------------------------------------------- #
-    # Post-pass: per-cluster matched-filter cos score at the accepted t0.
+    # Post-pass A: family-collective sub-tick re-refinement (ND stage E port).
+    # After the per-cluster matching stages have converged, group clusters by
+    # time-adjacency on their assigned t0s (any two clusters within
+    # `group_merge` ticks belong to the same family) and refit each MULTI-
+    # cluster family's t0 collectively -- one shared dt shift applied to all
+    # of the family's members, chosen to minimize the joint chi2 over the
+    # family's summed predicted image across every TPC it occupies. This
+    # mirrors ND's subtick_refine.py `stage E`: an interaction sees ONE t0,
+    # its constituent clusters move together. Singletons are left untouched.
+    # --------------------------------------------------------------------- #
+    family_stats = match.refine_families_collective(
+        hit_t0=hit_t0, labels=labels,
+        cluster_to_tpcs=cluster_to_tpcs,
+        image_maps=image_maps,
+        base_image=base_image,
+        full_wvfm=ev.fullLightWaveform, full_var=ev.fullLightVar,
+        cluster_energies=cluster_energies,
+    )
+    if verbose and family_stats.get("n_multi", 0) > 0:
+        print(f"[ev {ev_id}] family-collective refit: "
+              f"{family_stats['n_refined']}/{family_stats['n_multi']} multi-cluster "
+              f"families refit; singletons={family_stats['n_singleton']}; "
+              f"dt_rms={family_stats['dt_rms']:.3f} tk")
+
+    # --------------------------------------------------------------------- #
+    # Post-pass B: per-cluster matched-filter cos score at the accepted t0.
     # Cheap (~1 call to matched_filter_at per (cluster, tpc)), non-invasive
     # (no stage-code changes), and directly measures how well each placed
     # cluster's predicted light pattern matches the observed residual once

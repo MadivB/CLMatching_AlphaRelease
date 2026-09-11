@@ -728,9 +728,170 @@ def colocation_repair(*, labels, xset, yset, zset, hit_t0, cluster_energies,
     return rows
 
 
+def refine_families_collective(
+    *,
+    hit_t0,
+    labels,
+    cluster_to_tpcs,
+    image_maps,
+    base_image,
+    full_wvfm,
+    full_var,
+    cluster_energies=None,
+    group_merge: float = 0.5,
+    min_family_mev: float = 5.0,
+    quad_hw: int = 10,
+    step: float = 0.05,
+):
+    """Family-collective sub-tick re-refinement (ND stage E port for 2x2).
+
+    Runs AFTER the per-cluster matching stages are done. Groups clusters by
+    time-adjacency on their assigned t0s (any two clusters within
+    ``group_merge`` ticks belong to the same family). For each MULTI-cluster
+    family, builds a joint loss curve as a function of a single shared dt
+    shift by summing the family's members' predicted images across the TPCs
+    they occupy, evaluates the loss at 2*quad_hw+1 fine-grid offsets around
+    the family's energy-weighted mean t0, and applies an analytic quadratic
+    minimum. The SAME dt is added to every family member's hits (relative
+    micro-offsets between members are preserved -- the ND convention).
+
+    Singletons (one-cluster families) are left untouched by design.
+
+    Returns a summary dict {"n_families", "n_multi", "n_refined",
+    "n_singleton", "n_nonconvex", "n_edge", "n_range", "dt_max", "dt_rms"}.
+    hit_t0 is modified in place.
+    """
+    st = {"n_families": 0, "n_multi": 0, "n_refined": 0,
+          "n_singleton": 0, "n_nonconvex": 0, "n_edge": 0, "n_range": 0,
+          "dt_max": 0.0, "dt_rms": 0.0}
+
+    cluster_ids = np.unique(labels[labels >= 0])
+    if cluster_ids.size == 0:
+        return st
+
+    cluster_t0 = {}
+    for cid in cluster_ids:
+        cid = int(cid)
+        m = (labels == cid)
+        if not m.any():
+            continue
+        vals = hit_t0[m]
+        if not np.isfinite(vals).any():
+            continue
+        cluster_t0[cid] = float(np.median(vals))
+    if not cluster_t0:
+        return st
+
+    # Group by time-adjacency (ND recipe: sort by t0, break where gap > group_merge)
+    sorted_cids = sorted(cluster_t0.keys(), key=lambda c: cluster_t0[c])
+    families = []
+    current = [sorted_cids[0]]
+    for cid in sorted_cids[1:]:
+        if cluster_t0[cid] - cluster_t0[current[-1]] <= group_merge:
+            current.append(cid)
+        else:
+            families.append(current)
+            current = [cid]
+    families.append(current)
+
+    st["n_families"] = len(families)
+    st["n_singleton"] = sum(1 for f in families if len(f) < 2)
+    st["n_multi"] = st["n_families"] - st["n_singleton"]
+
+    offsets = np.arange(-quad_hw, quad_hw + 1) * step
+    dts = []
+
+    for family in families:
+        if len(family) < 2:
+            continue
+
+        if cluster_energies is not None:
+            e_total = sum(float(cluster_energies.get(cid, 0.0)) for cid in family)
+            if e_total < min_family_mev:
+                continue
+            weights = np.array([max(float(cluster_energies.get(cid, 0.0)), 1e-6)
+                                for cid in family], dtype=np.float64)
+        else:
+            weights = np.ones(len(family), dtype=np.float64)
+        w_sum = float(weights.sum()) or 1.0
+        t0_anchor = float(sum(cluster_t0[cid] * w for cid, w in zip(family, weights))
+                          / w_sum)
+
+        tpcs_used = sorted({int(t) for cid in family
+                            for t in cluster_to_tpcs.get(cid, [])})
+        if not tpcs_used:
+            continue
+
+        # Build the family-collective loss curve, summing over TPCs.
+        curve = np.zeros(offsets.size, dtype=np.float64)
+        any_tpc = False
+        for tpc in tpcs_used:
+            fam_imgs = [np.asarray(image_maps[(cid, tpc)], dtype=np.float32)
+                        for cid in family if (cid, tpc) in image_maps]
+            if not fam_imgs:
+                continue
+            fam_img = np.sum(fam_imgs, axis=0).astype(np.float32)
+            base = np.asarray(base_image[tpc], dtype=np.float32)
+            act = np.asarray(full_wvfm[tpc], dtype=np.float32)
+            var = np.asarray(full_var[tpc], dtype=np.float32)
+
+            # Subtract each family member's contribution at its OWN per-cluster
+            # t0 so `base_wo_family` is the base minus the family. Approximate:
+            # each member was placed by earlier stages, so its image was folded
+            # into base at its cluster t0.
+            base_wo_family = base.copy()
+            for cid in family:
+                if (cid, tpc) not in image_maps:
+                    continue
+                own = shift_frac(image_maps[(cid, tpc)], cluster_t0[cid])
+                base_wo_family = np.clip(base_wo_family - own, 0.0, None)
+
+            for i, dt in enumerate(offsets):
+                curve[i] += score_at(fam_img, base_wo_family, act, var,
+                                     t0_anchor + float(dt), None)
+            any_tpc = True
+
+        if not any_tpc:
+            continue
+
+        i0 = int(np.argmin(curve))
+        if i0 < 1 or i0 > offsets.size - 2:
+            st["n_edge"] += 1
+            continue
+
+        # 3-point parabola vertex around the integer argmin (in step units).
+        L_lo, L_mid, L_hi = curve[i0 - 1], curve[i0], curve[i0 + 1]
+        a = (L_lo - 2.0 * L_mid + L_hi) / 2.0
+        if a <= 0:
+            st["n_nonconvex"] += 1
+            continue
+        b = (L_hi - L_lo) / 2.0
+        xs = -b / (2.0 * a)  # vertex offset from i0, in units of `step`
+        if abs(xs) > 1.0:
+            # Vertex sits outside the [i0-1, i0+1] window -- the true minimum
+            # is beyond an adjacent point, refit unreliable. Skip the family.
+            st["n_range"] += 1
+            continue
+
+        dt_final = float(offsets[i0]) + xs * step  # total offset from anchor, in ticks
+        # Apply the SAME dt to every hit belonging to any cluster in the family.
+        # Preserves relative micro-offsets between family members (ND convention).
+        for cid in family:
+            m = (labels == cid)
+            hit_t0[m] = (hit_t0[m].astype(np.float64) + dt_final).astype(np.float32)
+        dts.append(abs(dt_final))
+        st["n_refined"] += 1
+
+    if dts:
+        st["dt_max"] = float(np.max(dts))
+        st["dt_rms"] = float(np.sqrt(np.mean(np.square(dts))))
+    return st
+
+
 __all__ = [
     "shift_frac", "score_at", "full_integer_scan", "peak_snap_t0",
     "support_channels", "refine_t0_subtick", "best_among_candidates",
     "match_tracks", "match_clusters_greedy", "refine_clusters",
     "colocation_repair", "region_grow_association", "light_support_tile_mask",
+    "refine_families_collective",
 ]
