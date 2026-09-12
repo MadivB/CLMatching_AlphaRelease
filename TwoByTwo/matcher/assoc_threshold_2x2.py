@@ -93,6 +93,9 @@ def threshold_family_association(*, labels, xset, yset, zset, Eset, hitTPCid,
                                  refine_step: float = 0.25,
                                  refine_span: float = 3.0,
                                  refine_quad: bool = True,
+                                 group_merge_ticks: float = 10.0,
+                                 group_snap_seeds: bool = False,
+                                 group_snap_tol: float = 5.0,
                                  refine_log=None,
                                  hit_refine: str = None,
                                  sipm_xyz=None,
@@ -295,11 +298,28 @@ def threshold_family_association(*, labels, xset, yset, zset, Eset, hitTPCid,
         if assigned.any():
             avals = hit_t0[assigned]
             aidx = np.flatnonzero(assigned)
+            if group_snap_seeds and flash_seeds is not None:
+                # ND-style snap-then-group: anchor each hit t0 to the nearest
+                # flash seed of its TPC (within 5 ticks) so same-flash hits
+                # share one exact time and a tight merge window cannot
+                # fragment a genuine family.
+                tpca = np.asarray(hitTPCid)[aidx]
+                for tp in range(len(flash_seeds)):
+                    seeds = np.asarray(flash_seeds[tp], np.float64)
+                    if seeds.size == 0:
+                        continue
+                    mtp = np.flatnonzero(tpca == tp)
+                    if mtp.size == 0:
+                        continue
+                    jn = np.argmin(np.abs(avals[mtp][:, None] - seeds[None, :]),
+                                   axis=1)
+                    near = np.abs(avals[mtp] - seeds[jn]) <= group_snap_tol
+                    avals[mtp[near]] = seeds[jn[near]]
             centers2: List[float] = []
             gid2 = np.full(avals.size, -1, np.int64)
             for i in np.argsort(avals):
                 for gi, c0 in enumerate(centers2):
-                    if abs(avals[i] - c0) <= 10.0:
+                    if abs(avals[i] - c0) <= group_merge_ticks:
                         gid2[i] = gi
                         break
                 else:

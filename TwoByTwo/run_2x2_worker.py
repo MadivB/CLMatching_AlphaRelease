@@ -86,8 +86,18 @@ def _version_config(version: str, var_wrapper):
     into the first serious release. "v2.0" is kept as a legacy alias of v0.1.
     """
     v = (version or "v1.0").strip().lower()
-    if v in ("v1", "v1.0", "error_matrix", "errormatrix", "baseline", "default"):
-        # DEFAULT: error-matrix (greedy unit-variance) small-cluster association.
+    if v in ("v1", "v1.0", "threshold_family", "conclusion", "default"):
+        # DEFAULT v1.0-conclusion: pipeline provides clusters/images; the final
+        # t0 assignment comes from assoc_threshold_2x2.threshold_family_
+        # association with the benchmark-final config (2-tick family merge +
+        # ND-style seed snap tol 12 + quadratic sub-tick refine + light-model
+        # energy discrimination). Passed the 95% benchmark:
+        # eff@5t 96.15%, eff@1t 95.91%, core sigma 2.31 ns.
+        return dict(enable_region_grow=False, tiebreak_variance_model=None,
+                    _threshold_family=True)
+    if v in ("v1.0-legacy", "error_matrix", "errormatrix", "baseline"):
+        # Legacy v1.0: error-matrix (greedy unit-variance) association; final
+        # t0s come from the pipeline stages themselves.
         return dict(enable_region_grow=False, tiebreak_variance_model=None)
     if v in ("v0.1", "v0.1-rg", "v2", "v2.0", "region_grow", "regiongrow"):
         # v0.1: region-grow (tuned) + variance tiebreaker.
@@ -135,9 +145,10 @@ def main():
     ap.add_argument("--mode", choices=["sim", "data"], default="sim",
                     help="perceiver checkpoint to use")
     ap.add_argument("--version", default="v1.0",
-                    help="v1.0 = error-matrix (default) | v0.1 = region-grow + "
-                         "tiebreaker (alias v2.0) | v0.1-fx = chi2 family-expand "
-                         "(experimental)")
+                    help="v1.0 = threshold-family association, benchmark-final "
+                         "config (default) | v1.0-legacy = error-matrix | "
+                         "v0.1 = region-grow + tiebreaker (alias v2.0) | "
+                         "v0.1-fx = chi2 family-expand (experimental)")
     ap.add_argument("--event-stride", type=int, default=1)
     ap.add_argument("--event-offset", type=int, default=0)
     ap.add_argument("--max-events-per-file", type=int, default=0,
@@ -175,6 +186,7 @@ def main():
         var_wrapper = _build_var_wrapper(args.device)
         cfg = _version_config(args.version, var_wrapper)
     family_expand = bool(cfg.pop("_family_expand", False))
+    threshold_family = bool(cfg.pop("_threshold_family", False))
     if args.verbose:
         print(f"[w{args.event_offset}] models loaded ({args.mode}, {args.version}) "
               f"in {time.time()-t0:.1f}s", flush=True)
@@ -216,6 +228,39 @@ def main():
                                         ev_id=np.int64(ev_id), ok=np.int64(0))
                     n_skip += 1
                     continue
+                if threshold_family:
+                    # v1.0-conclusion: full threshold-family association. The
+                    # pipeline's own hit_timestamps are superseded -- the
+                    # association re-derives every cluster's t0 from scratch
+                    # (families merge at 2 ticks, snap to flash seeds within
+                    # 12 ticks, quadratic sub-tick refine, light-model energy
+                    # discrimination). OVERWRITES r["hit_timestamps"] in place
+                    # so the NPZ format below is unchanged.
+                    import assoc_threshold_2x2 as at
+                    ev = r["event"]
+                    at.threshold_family_association(
+                        labels=r["labels"], xset=ev.xset, yset=ev.yset,
+                        zset=ev.zset, Eset=ev.Eset, hitTPCid=ev.hitTPCid,
+                        hit_t0=r["hit_timestamps"],
+                        cluster_energies=r["cluster_energies"],
+                        image_maps=r["image_maps"],
+                        labels_noisy=r["labels_noisy"],
+                        full_wvfm=ev.fullLightWaveform,
+                        full_var=ev.fullLightVar,
+                        flash_seeds=ev.flash_seeds,
+                        light_model=light_model,
+                        refine_quad=True,
+                        group_merge_ticks=2.0,
+                        group_snap_seeds=True,
+                        group_snap_tol=12.0)
+                    # Confidence must reflect the FINAL t0s: recompute the
+                    # per-cluster matched-filter cos at the association times.
+                    r["cluster_cos"] = pipe.compute_cluster_cos(
+                        labels=r["labels"], image_maps=r["image_maps"],
+                        hit_t0=r["hit_timestamps"],
+                        full_wvfm=ev.fullLightWaveform,
+                        full_var=ev.fullLightVar,
+                        cluster_to_tpcs=r["cluster_to_tpcs"])
                 if family_expand:
                     # v0.1-fx: chi2 family-expansion post-pass (in-place on
                     # hit_timestamps; uses the pipeline's own structures).

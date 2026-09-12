@@ -250,32 +250,7 @@ def run_pipeline_for_event(h5, ev_id: int, *, light_model,
               f"matched_hits={n_matched}")
 
     # --------------------------------------------------------------------- #
-    # Post-pass A: family-collective sub-tick re-refinement (ND stage E port).
-    # After the per-cluster matching stages have converged, group clusters by
-    # time-adjacency on their assigned t0s (any two clusters within
-    # `group_merge` ticks belong to the same family) and refit each MULTI-
-    # cluster family's t0 collectively -- one shared dt shift applied to all
-    # of the family's members, chosen to minimize the joint chi2 over the
-    # family's summed predicted image across every TPC it occupies. This
-    # mirrors ND's subtick_refine.py `stage E`: an interaction sees ONE t0,
-    # its constituent clusters move together. Singletons are left untouched.
-    # --------------------------------------------------------------------- #
-    family_stats = match.refine_families_collective(
-        hit_t0=hit_t0, labels=labels,
-        cluster_to_tpcs=cluster_to_tpcs,
-        image_maps=image_maps,
-        base_image=base_image,
-        full_wvfm=ev.fullLightWaveform, full_var=ev.fullLightVar,
-        cluster_energies=cluster_energies,
-    )
-    if verbose and family_stats.get("n_multi", 0) > 0:
-        print(f"[ev {ev_id}] family-collective refit: "
-              f"{family_stats['n_refined']}/{family_stats['n_multi']} multi-cluster "
-              f"families refit; singletons={family_stats['n_singleton']}; "
-              f"dt_rms={family_stats['dt_rms']:.3f} tk")
-
-    # --------------------------------------------------------------------- #
-    # Post-pass B: per-cluster matched-filter cos score at the accepted t0.
+    # Post-pass: per-cluster matched-filter cos score at the accepted t0.
     # Cheap (~1 call to matched_filter_at per (cluster, tpc)), non-invasive
     # (no stage-code changes), and directly measures how well each placed
     # cluster's predicted light pattern matches the observed residual once
@@ -346,6 +321,67 @@ def run_pipeline_for_event(h5, ev_id: int, *, light_model,
     }
 
 
+def compute_cluster_cos(*, labels, image_maps, hit_t0, full_wvfm, full_var,
+                        cluster_to_tpcs=None):
+    """Per-cluster matched-filter cos score at the GIVEN per-hit t0s.
+
+    Rebuilds the base image from scratch by placing every cluster's predicted
+    image at its (current) cluster t0 -- so this can be called after ANY
+    post-pass that rewrites hit_t0 (e.g. assoc_threshold_2x2's
+    threshold_family_association) and the scores stay consistent with the
+    final times. Returns dict {cid: mean cos over the cluster's TPCs}.
+    """
+    from matching_2x2 import matched_filter_at, shift_frac, ADC_CLIP
+
+    labels = np.asarray(labels, np.int64)
+    hit_t0 = np.asarray(hit_t0)
+    act = np.asarray(full_wvfm, np.float32)
+    var = np.asarray(full_var, np.float32)
+
+    # cluster -> t0 (first assigned hit) and cluster -> tpcs
+    cl_t0: dict[int, float] = {}
+    for cid in np.unique(labels[labels >= 0]):
+        cid = int(cid)
+        vals = hit_t0[labels == cid]
+        vals = vals[np.isfinite(vals) & (vals >= 0)]
+        if vals.size:
+            cl_t0[cid] = float(vals[0])
+    if cluster_to_tpcs is None:
+        cluster_to_tpcs = {}
+        for (cid, tp) in image_maps.keys():
+            cluster_to_tpcs.setdefault(int(cid), []).append(int(tp))
+
+    # base = sum of every placed cluster's image at its t0
+    base = np.zeros_like(act)
+    for cid, t0c in cl_t0.items():
+        for tp in cluster_to_tpcs.get(cid, []):
+            key = (cid, int(tp))
+            if key in image_maps:
+                blk = base[int(tp)] + shift_frac(image_maps[key], t0c)
+                base[int(tp)] = np.clip(blk, 0.0, ADC_CLIP)
+
+    cluster_cos: dict[int, float] = {}
+    for cid, t0c in cl_t0.items():
+        cos_vals = []
+        for tp in cluster_to_tpcs.get(cid, []):
+            key = (cid, int(tp))
+            if key not in image_maps:
+                continue
+            img = np.asarray(image_maps[key], dtype=np.float32)
+            try:
+                own = shift_frac(img, t0c)
+                base_others = np.clip(base[int(tp)] - own, 0.0, None)
+                cos = matched_filter_at(img, base_others, act[int(tp)],
+                                        var[int(tp)], t0c, None)
+                if np.isfinite(cos):
+                    cos_vals.append(float(cos))
+            except Exception:
+                continue
+        if cos_vals:
+            cluster_cos[cid] = float(np.mean(cos_vals))
+    return cluster_cos
+
+
 def run_multiple(h5, ev_ids, *, light_model, **kw):
     """Run several events; return concatenated (t0, hit_refs) and per-event results."""
     all_t0, all_refs, results = [], [], []
@@ -362,4 +398,4 @@ def run_multiple(h5, ev_ids, *, light_model, **kw):
 
 
 __all__ = ["run_pipeline_for_event", "run_multiple", "cluster_charge",
-           "build_noisy_labels"]
+           "build_noisy_labels", "compute_cluster_cos"]
