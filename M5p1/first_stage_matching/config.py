@@ -73,6 +73,12 @@ class PredictionConfig:
     # Backbone track/shower labels are always predicted.  None = off
     # (vanilla, bit-identical).  Streaming mode only.
     min_cluster_energy_mev: float | None = None
+    # v1.1: separate floor for blob clusters that touch a SHOWER TPC (charge
+    # energy > shower_tpc_energy_mev); None = same as min_cluster_energy_mev.
+    # Measured 2026-09-22: a 0.5 MeV floor helps non-shower TPCs (+0.15 pp NS)
+    # and buys nothing in shower TPCs while doubling the matrix-stage cost.
+    min_cluster_energy_shower_tpc_mev: float | None = None
+    shower_tpc_energy_mev: float = 1400.0
     image_voxelize_device: str = "auto"  # "auto" uses GPU scatter when the light model is on CUDA.
     image_use_mixed_precision: bool = False
     image_amp_dtype: str = "bf16"

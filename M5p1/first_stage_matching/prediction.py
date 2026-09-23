@@ -167,18 +167,28 @@ def predict_first_stage_images_and_std(
         e_arr = np.asarray(energy)
         # Backbone track/shower labels are always predicted.
         restrict_clusters = set(range(int(split_index)))
+        min_e_sh = getattr(config.prediction, "min_cluster_energy_shower_tpc_mev", None)
+        tpc_e = None
+        if min_e_sh is not None:
+            _ok = tpc >= 0
+            tpc_e = np.bincount(tpc[_ok], weights=np.asarray(e_arr, np.float64)[_ok])
         for l in np.unique(lab[lab >= 0]):
             l = int(l)
             if l < int(split_index):
                 continue
             mask = lab == l
+            floor = float(min_e)
+            if tpc_e is not None:
+                _t = np.unique(tpc[mask]); _t = _t[(_t >= 0) & (_t < tpc_e.size)]
+                if _t.size and float(tpc_e[_t].max()) > float(config.prediction.shower_tpc_energy_mev):
+                    floor = float(min_e_sh)
             # Energy expression mirrors _run_phase2's cluster_energies sum
             # (same array, same dtype, same masked pairwise .sum()) so the
             # strict-> comparison cannot diverge from the v11 partition at
             # the threshold boundary.  TPC span may only over-count relative
             # to _cluster_image_tpcs (which drops out-of-range tpc ids), so
             # the keep-set is always a superset of the Phase-2 primaries.
-            if np.unique(tpc[mask]).size > 1 or float(e_arr[mask].sum()) > float(min_e):
+            if np.unique(tpc[mask]).size > 1 or float(e_arr[mask].sum()) > floor:
                 restrict_clusters.add(l)
 
     t_total = time.perf_counter()
