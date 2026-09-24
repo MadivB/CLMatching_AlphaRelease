@@ -9,6 +9,17 @@ except ImportError:
     cmr = None
 import plotly.graph_objects as go
 
+def _tpc_zlim(TPCid, zSet=None):
+    """True ND-LAr TPC z boundary (1 cm pad): z-row = (TPCid %% 10)//2, each
+    row spans [418, 513] + 100*row.  Falls back to hit extent for non-ND ids."""
+    import numpy as _np
+    r = (int(TPCid) % 10) // 2
+    lo, hi = 417.0 + 100.0 * r, 514.0 + 100.0 * r
+    if zSet is not None and len(zSet) and (_np.min(zSet) < lo or _np.max(zSet) > hi):
+        return (_np.min(zSet) - 10, _np.max(zSet) + 10)
+    return (lo, hi)
+
+
 def plot_tpc_light_and_charge(ev_id, TPCid, hits_full_ev, actual, predicted=None, geom_map=None, individualScaling=False):
     """
     Display charge hits in the center and light waveforms (actual vs. predicted) on the sides for a given TPC.
@@ -97,7 +108,7 @@ def plot_tpc_light_and_charge(ev_id, TPCid, hits_full_ev, actual, predicted=None
         geom = geom_map[TPCid]
         zlim = (geom.z_min, geom.z_max)
     else:
-        zlim = (np.min(zSet)-10, np.max(zSet)+10)
+        zlim = _tpc_zlim(TPCid, zSet)
 
     center_ax.set_xlim(zlim); center_ax.set_ylim(y_fixed); center_ax.set_aspect('auto')
     center_ax.set_facecolor('black')
@@ -236,7 +247,7 @@ def plot_tpc_light_and_charge_with_overlay(
         geom = geom_map[TPCid]
         zlim = (geom.z_min, geom.z_max)
     else:
-        zlim = (np.min(zSet) - 10, np.max(zSet) + 10)
+        zlim = _tpc_zlim(TPCid, zSet)
 
     center_ax.set_xlim(zlim)
     center_ax.set_ylim(y_fixed)

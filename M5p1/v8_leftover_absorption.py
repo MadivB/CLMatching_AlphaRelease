@@ -10,6 +10,7 @@ try:
     from v3_2_global_matching import compute_error_metric, _shift_block
     from var_prediction.inference_ndfl_v2 import select_continuous_side_channels_from_waveform
     from v12_saturation_mask import materialize_support_entry_v12
+    from light_saturation import clip_hi_stack
 except ModuleNotFoundError:  # pragma: no cover - notebook import fallback
     from M5p1.cluster_fit import fit_noise_list
     from NewMLSection.ML_NDfull_perceiver import process_clusters_to_imageMaps
@@ -18,6 +19,7 @@ except ModuleNotFoundError:  # pragma: no cover - notebook import fallback
         select_continuous_side_channels_from_waveform,
     )
     from M5p1.v12_saturation_mask import materialize_support_entry_v12
+    from M5p1.light_saturation import clip_hi_stack
 
 
 def _label_type(label: int, label_info: dict[int, dict[str, Any]] | None) -> str:
@@ -248,7 +250,7 @@ def _evaluate_absorption_gain(
     full_light_waveform: np.ndarray,
     full_light_std: np.ndarray,
     support_by_tpc: dict[int, dict[str, Any]],
-    adc_clip: float,
+    adc_clip: float | np.ndarray,
     saturated_channel_cache: dict[str, Any] | None = None,
 ) -> tuple[float, float, float, int]:
     tpcs_arr = np.asarray(tpcs, dtype=int)
@@ -262,8 +264,9 @@ def _evaluate_absorption_gain(
     shifted_aug = _shift_block(aug_block, int(label_t0))
     base_current = np.asarray(base_image[tpcs_arr], dtype=np.float32)
     base_without = np.clip(base_current - shifted_core, 0.0, None)
-    model_core = np.clip(base_without + shifted_core, None, float(adc_clip))
-    model_aug = np.clip(base_without + shifted_aug, None, float(adc_clip))
+    stack_clip = clip_hi_stack(adc_clip, tpcs_arr)
+    model_core = np.clip(base_without + shifted_core, None, stack_clip)
+    model_aug = np.clip(base_without + shifted_aug, None, stack_clip)
 
     model_core_sel: list[np.ndarray] = []
     model_aug_sel: list[np.ndarray] = []
@@ -488,7 +491,7 @@ def try_absorb_leftovers_for_parent_v8(
     support_light_fraction: float = 0.90,
     support_max_gap: int = 2,
     improvement_eps: float = 0.0,
-    adc_clip: float = 60780.0,
+    adc_clip: float | np.ndarray = 60780.0,
     saturated_channel_cache: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     if absorption_state is None:
@@ -569,7 +572,7 @@ def try_absorb_leftovers_for_parent_v8(
         full_light_waveform=full_light_waveform,
         full_light_std=full_light_std,
         support_by_tpc=support_by_tpc,
-        adc_clip=float(adc_clip),
+        adc_clip=adc_clip,
         saturated_channel_cache=saturated_channel_cache,
     )
     if float(gain) <= float(improvement_eps):
@@ -586,7 +589,7 @@ def try_absorb_leftovers_for_parent_v8(
     base_image[assigned_tpcs_arr] = np.clip(
         np.asarray(base_image[assigned_tpcs_arr], dtype=np.float32) - shifted_core + shifted_aug,
         0.0,
-        float(adc_clip),
+        clip_hi_stack(adc_clip, assigned_tpcs_arr),
     ).astype(np.float32)
 
     hit_timestamps[accepted_hits] = float(label_t0)
@@ -670,7 +673,7 @@ def absorb_leftover_hits_v8(
     huge_cluster_energy_mev: float = 50.0,
     huge_cluster_absorb_max_hits: int = 10,
     improvement_eps: float = 0.0,
-    adc_clip: float = 60780.0,
+    adc_clip: float | np.ndarray = 60780.0,
     parent_batch_size: int = 64,
     saturated_channel_cache: dict[str, Any] | None = None,
 ) -> tuple[
@@ -899,7 +902,7 @@ def absorb_leftover_hits_v8(
                 full_light_waveform=full_light_waveform,
                 full_light_std=full_light_std,
                 support_by_tpc=support_by_tpc,
-                adc_clip=float(adc_clip),
+                adc_clip=adc_clip,
                 saturated_channel_cache=saturated_channel_cache,
             )
 
@@ -936,7 +939,7 @@ def absorb_leftover_hits_v8(
         base_image[tpcs_arr] = np.clip(
             np.asarray(base_image[tpcs_arr], dtype=np.float32) - shifted_core + shifted_aug,
             0.0,
-            float(adc_clip),
+            clip_hi_stack(adc_clip, tpcs_arr),
         ).astype(np.float32)
 
         hit_timestamps[accepted_hits] = float(label_t0)

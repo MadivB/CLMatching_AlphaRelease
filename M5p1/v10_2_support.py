@@ -7,8 +7,10 @@ import numpy as np
 from var_prediction.inference_ndfl_v2 import select_continuous_side_channels_from_waveform
 try:
     from v12_saturation_mask import materialize_support_entry_v12
+    from light_saturation import clip_hi, clip_scalar, is_scalar_clip
 except ModuleNotFoundError:  # pragma: no cover - notebook import fallback
     from M5p1.v12_saturation_mask import materialize_support_entry_v12
+    from M5p1.light_saturation import clip_hi, clip_scalar, is_scalar_clip
 
 
 def build_cluster_channel_support_cache_v10_2(
@@ -237,8 +239,29 @@ def stack_cluster_fit_inputs_v10_2(
     )
 
 
+def stacked_fit_clip_bound_v10_2(adc_clip: Any, block_meta: list[dict[str, Any]]) -> Any:
+    """Upper clip bound for the rows returned by ``stack_cluster_fit_inputs_v10_2``.
+
+    Legacy scalar ``adc_clip`` -> the same float (what callers used to get from
+    ``float(adc_clip)``).  Per-event ceiling ``(n_tpc, n_ch)`` -> ``(n_rows, 1)`` array built
+    in the same order as the stacked rows: ``block_meta`` order, ``channel_indices`` within
+    each block, skipping blocks that contributed no fit channels.
+    """
+    if is_scalar_clip(adc_clip):
+        return clip_hi(adc_clip)
+    rows = [
+        clip_hi(adc_clip, int(item["tpcid"]), np.asarray(item["channel_indices"], dtype=np.intp))
+        for item in block_meta
+        if not bool(item.get("skipped_for_fit", False)) and np.asarray(item["channel_indices"]).size > 0
+    ]
+    if not rows:
+        return clip_scalar(adc_clip)
+    return np.concatenate(rows, axis=0)
+
+
 __all__ = [
     "build_cluster_channel_support_cache_v10_2",
     "get_cluster_tpc_fit_block_v10_2",
     "stack_cluster_fit_inputs_v10_2",
+    "stacked_fit_clip_bound_v10_2",
 ]

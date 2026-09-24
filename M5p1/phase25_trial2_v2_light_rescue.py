@@ -34,6 +34,7 @@ import numpy as np
 try:
     from . import phase25_amendment as p25
     from . import phase25_trial2 as t2
+    from .light_saturation import clip_hi
     from . import phase25_trial2_combined as t2c
     from .flash_cluster_table import (
         ensure_flash_cluster_flags,
@@ -43,6 +44,7 @@ try:
 except Exception:  # pragma: no cover - direct notebook import fallback
     import phase25_amendment as p25
     import phase25_trial2 as t2
+    from light_saturation import clip_hi
     import phase25_trial2_combined as t2c
     from flash_cluster_table import (
         ensure_flash_cluster_flags,
@@ -507,7 +509,8 @@ def _try_reshuffle_per_tpc(
         float(cfg.phys_std_floor),
     )
     base_w = np.asarray(base_image[int(tpc)][keep][:, tick_mask], dtype=np.float64)
-    adc_clip = float(cfg25.adc_clip)
+    # upper bound for the ``[keep]`` rows of this TPC (legacy scalar, or (n_keep, 1) per-channel ceiling)
+    adc_clip = clip_hi(cfg25.adc_clip, int(tpc), keep)
 
     # Pre-shifted contributions in the window.  Each cluster-at-t0 is a
     # window-restricted view of ``shift(proxy, t0)``.
@@ -670,6 +673,7 @@ def run_trial2_v2_light_rescue_from_namespace(
     # Phase25Config aligned with our cfg overrides; we keep p25 permissive and
     # let our gate make the decision.
     cfg25_light = t2._make_phase25_config(cfg, enable_spatial=False, enable_light=True)
+    cfg25_light.adc_clip = t2._namespace_adc_clip(namespace, cfg25_light.adc_clip)
     cfg25_light.max_move_energy_per_tpc_mev = None
     cfg25_light.light_min_loss_improvement = -1.0e30
     cfg25_light.light_min_old_overflow_reduction = -1.0e30

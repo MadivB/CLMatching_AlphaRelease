@@ -16,6 +16,7 @@ try:
         append_candidate_t0,
         compute_error_metric,
     )
+    from light_saturation import clip_hi, clip_hi_stack
 except ModuleNotFoundError:  # pragma: no cover - notebook import fallback
     from M5p1.v3_2_global_matching import (
         _assign_cluster_at_t0,
@@ -28,6 +29,7 @@ except ModuleNotFoundError:  # pragma: no cover - notebook import fallback
         append_candidate_t0,
         compute_error_metric,
     )
+    from M5p1.light_saturation import clip_hi, clip_hi_stack
 
 try:
     from v3_3_global_matching import _collect_tpc_cluster_cache, _residual_peaks_for_tpc
@@ -86,10 +88,11 @@ def _local_refine_collective_state(
     base_seed: np.ndarray,
     actual_tpc: np.ndarray,
     error_tpc: np.ndarray,
-    adc_clip: float,
+    adc_clip: float | np.ndarray,
     max_iterations: int,
     relax_eps: float,
 ) -> tuple[dict[int, int], np.ndarray, float, list[dict[str, Any]]]:
+    # ``adc_clip``: legacy scalar or the single-TPC bound ``clip_hi(ceiling, tpcid)`` from the caller.
     assignments = {int(cid): int(t0) for cid, t0 in assignments.items()}
     model = np.asarray(base_seed, dtype=np.float32).copy()
     for clusterid, t0 in assignments.items():
@@ -153,7 +156,7 @@ def _collective_large_tpc_assign(
     unassigned_by_tpc: dict[int, list[int]],
     cluster_energies: dict[int, float],
     search_range: int,
-    adc_clip: float,
+    adc_clip: float | np.ndarray,
     scan_top_k: int,
     scan_min_sep: int,
     beam_width: int,
@@ -179,6 +182,7 @@ def _collective_large_tpc_assign(
     error_tpc = np.asarray(full_light_std[int(tpcid)], dtype=np.float32)
     base_seed = np.asarray(base_image[int(tpcid)], dtype=np.float32).copy()
     initial_score = compute_error_metric(base_seed, actual_tpc, error_tpc)
+    tpc_clip = clip_hi(adc_clip, int(tpcid))
 
     cluster_images: dict[int, np.ndarray] = {}
     candidate_map: dict[int, list[int]] = {}
@@ -211,7 +215,7 @@ def _collective_large_tpc_assign(
             actual_tpc[None, :, :],
             error_tpc[None, :, :],
             search_range=search_range,
-            adc_clip=adc_clip,
+            adc_clip=tpc_clip,
             return_curve=True,
         )
         extra_t0s = [int(t0) for t0 in t0_candidates[int(tpcid)]]
@@ -342,7 +346,7 @@ def _collective_large_tpc_assign(
                 model = np.asarray(state["model"], dtype=np.float32)
                 for t0 in candidate_map.get(int(clusterid), []):
                     shifted = _shift_block(cluster_image[None, :, :], int(t0))[0]
-                    candidate_model = np.clip(model + shifted, None, adc_clip)
+                    candidate_model = np.clip(model + shifted, None, tpc_clip)
                     candidate_score = compute_error_metric(candidate_model, actual_tpc, error_tpc)
                     assignments = dict(state["assignments"])
                     assignments[int(clusterid)] = int(t0)
@@ -379,7 +383,7 @@ def _collective_large_tpc_assign(
                 base_seed=base_seed,
                 actual_tpc=actual_tpc,
                 error_tpc=error_tpc,
-                adc_clip=adc_clip,
+                adc_clip=tpc_clip,
                 max_iterations=relax_iterations,
                 relax_eps=relax_eps,
             )
@@ -482,7 +486,7 @@ def _assign_remaining_clusters_error_matrix(
     unassigned_by_tpc: dict[int, list[int]],
     cluster_energies: dict[int, float],
     search_range: int,
-    adc_clip: float,
+    adc_clip: float | np.ndarray,
     collect_scan_losses: bool,
 ) -> tuple[list[dict[str, Any]], dict[int, dict[str, Any]], list[int], list[int], list[int]]:
     logs: list[dict[str, Any]] = []
@@ -575,7 +579,7 @@ def _assign_remaining_clusters_error_matrix(
         cluster_block = np.asarray(image_maps[(int(clusterid), int(tpcid))], dtype=np.float32)[None, :, :]
         shifted = _shift_block(cluster_block, int(opt_t0))[0]
         base_tpc = np.asarray(base_image[int(tpcid)], dtype=np.float32)
-        candidate_model = np.clip(base_tpc + shifted, None, adc_clip)
+        candidate_model = np.clip(base_tpc + shifted, None, clip_hi(adc_clip, int(tpcid)))
         candidate_error = compute_error_metric(candidate_model, actual_tpc, error_tpc)
         improvement = float(current_error - candidate_error)
         mode = "error_matrix"
@@ -656,7 +660,7 @@ def assign_small_clusters_v4(
     collective_relax_iterations: int = 3,
     collective_relax_eps: float = 2e-4,
     search_range: int = 895,
-    adc_clip: float = 60780.0,
+    adc_clip: float | np.ndarray = 60780.0,
     collect_scan_losses: bool = False,
     debug_tpcs: list[int] | None = None,
     max_saved_beam_states: int = 8,
@@ -923,7 +927,7 @@ def rebalance_step4_clusters_v4(
     min_move_ticks: int = 4,
     min_improvement: float = 1e-4,
     search_range: int | None = None,
-    adc_clip: float = 60780.0,
+    adc_clip: float | np.ndarray = 60780.0,
 ) -> tuple[
     np.ndarray,
     np.ndarray,
@@ -1060,7 +1064,7 @@ def rebalance_step4_clusters_v4(
                     actual_block,
                     error_block,
                     search_range=search_range,
-                    adc_clip=adc_clip,
+                    adc_clip=clip_hi_stack(adc_clip, tpcs_arr),
                     return_curve=False,
                 )
                 if abs(int(best_t0) - int(old_t0)) < int(min_move_ticks):
@@ -1072,7 +1076,7 @@ def rebalance_step4_clusters_v4(
                 if improvement <= float(min_improvement):
                     continue
 
-                candidate_model = np.clip(base_without + _shift_block(cluster_block, int(best_t0)), None, adc_clip)
+                candidate_model = np.clip(base_without + _shift_block(cluster_block, int(best_t0)), None, clip_hi_stack(adc_clip, tpcs_arr))
                 if best_move is None or float(improvement) > float(best_move["improvement"]):
                     best_move = {
                         "clusterid": int(clusterid),

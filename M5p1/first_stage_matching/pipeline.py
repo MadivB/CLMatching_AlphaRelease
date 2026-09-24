@@ -145,6 +145,8 @@ def run_first_stage_charge_light_matching(
         full_light_waveform=event.full_light_waveform,
         models=models,
         config=config,
+        sat_ceiling=event.sat_ceiling,
+        light_clipped=event.light_clipped,
     )
     t_prediction = time.perf_counter() - t0
     if verbose:

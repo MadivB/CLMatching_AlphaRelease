@@ -7,9 +7,11 @@ import numpy as np
 try:
     from pulse_shapes import timeinterpolation
     from v12_saturation_mask import materialize_support_entry_v12
+    from light_saturation import clip_hi, clip_hi_stack, is_scalar_clip
 except ModuleNotFoundError:  # pragma: no cover - notebook import fallback
     from M5p1.pulse_shapes import timeinterpolation
     from M5p1.v12_saturation_mask import materialize_support_entry_v12
+    from M5p1.light_saturation import clip_hi, clip_hi_stack, is_scalar_clip
 
 
 def append_candidate_t0(
@@ -94,9 +96,11 @@ def _scan_best_shift_multi(
     error_block: np.ndarray,
     *,
     search_range: int = 900,
-    adc_clip: float = 60780.0,
+    adc_clip: float | np.ndarray = 60780.0,
     return_curve: bool = False,
 ) -> tuple[int, float, np.ndarray | None]:
+    # ``adc_clip``: legacy scalar, or a bound already broadcastable to ``base_block + shifted``
+    # (callers resolve the per-event ceiling with clip_hi / clip_hi_stack for their block).
     best_t0 = 0
     best_score = np.inf
     loss_curve = None
@@ -159,7 +163,7 @@ def _loss_matrix_single_tpc(
     clusters: np.ndarray,
     placed_mask: np.ndarray,
     t0_candidates: list[int],
-    adc_clip: float = 60780.0,
+    adc_clip: float | np.ndarray = 60780.0,
 ) -> tuple[np.ndarray, np.ndarray]:
     remaining_clusters = np.asarray(clusters[~placed_mask], dtype=int)
     n_remaining = int(len(remaining_clusters))
@@ -176,11 +180,12 @@ def _loss_matrix_single_tpc(
     param_batch = cluster_images.reshape(-1, cluster_images.shape[-1])
     norm_factor = float(cluster_images.shape[1] * cluster_images.shape[2])
     safe_error = np.maximum(np.asarray(error_block, dtype=np.float32), 1e-6)
+    tpc_clip = clip_hi(adc_clip, int(tpcid))
 
     for j, t0 in enumerate(t0_candidates):
         shifted_flat = timeinterpolation(param_batch, shift=float(t0), baseline=0.0).astype(np.float32)
         shifted = shifted_flat.reshape(cluster_images.shape)
-        model = np.clip(shifted + base_block[None, :, :], None, adc_clip)
+        model = np.clip(shifted + base_block[None, :, :], None, tpc_clip)
         diff = model - actual_block[None, :, :]
         chi2 = (diff**2 / safe_error[None, :, :]).sum(axis=(1, 2))
         loss_matrix[:, j] = chi2 / norm_factor
@@ -240,11 +245,11 @@ def _assign_cluster_at_t0(
     stage: str,
     error_after: float,
     improvement: float,
-    adc_clip: float,
+    adc_clip: float | np.ndarray,
     max_t0: int,
 ) -> None:
     shifted_block = _shift_block(cluster_block, int(t0))
-    candidate_model = np.clip(_stack_tpcs(base_image, tpcs) + shifted_block, None, adc_clip)
+    candidate_model = np.clip(_stack_tpcs(base_image, tpcs) + shifted_block, None, clip_hi_stack(adc_clip, tpcs))
     base_image[np.asarray(tpcs, dtype=int)] = candidate_model.astype(np.float32)
     hit_timestamps[labels_global == int(clusterid)] = float(t0)
 
@@ -285,7 +290,7 @@ def _full_scan_assign(
     rejected_mode: str,
     assignment_improvement_eps: float,
     search_range: int,
-    adc_clip: float,
+    adc_clip: float | np.ndarray,
     t0_resolution: int,
     pulse_peak_tick: int,
     collect_scan_losses: bool,
@@ -299,6 +304,7 @@ def _full_scan_assign(
     fit_base_blocks: list[np.ndarray] = []
     fit_actual_blocks: list[np.ndarray] = []
     fit_error_blocks: list[np.ndarray] = []
+    fit_clip_blocks: list[np.ndarray] = []
     n_fit_channels_total = 0
 
     for block_idx, tpcid in enumerate(tpcs.tolist()):
@@ -315,6 +321,8 @@ def _full_scan_assign(
         fit_base_blocks.append(np.asarray(base_image[int(tpcid), channel_indices, :], dtype=np.float32))
         fit_actual_blocks.append(np.asarray(full_light_waveform[int(tpcid), channel_indices, :], dtype=np.float32))
         fit_error_blocks.append(np.asarray(full_light_std[int(tpcid), channel_indices, :], dtype=np.float32))
+        if not is_scalar_clip(adc_clip):
+            fit_clip_blocks.append(clip_hi(adc_clip, int(tpcid), channel_indices))
         n_fit_channels_total += int(channel_indices.size)
 
     if not fit_cluster_blocks:
@@ -331,6 +339,8 @@ def _full_scan_assign(
         base_block = np.concatenate(fit_base_blocks, axis=0)
         actual_block = np.concatenate(fit_actual_blocks, axis=0)
         error_block = np.concatenate(fit_error_blocks, axis=0)
+        # per-row upper bound matching the stacked/selected rows (scalar passes through unchanged)
+        fit_clip = adc_clip if is_scalar_clip(adc_clip) else np.concatenate(fit_clip_blocks, axis=0)
 
         current_error = compute_error_metric(base_block, actual_block, error_block)
         best_t0_scan, _, scan_curve = _scan_best_shift_multi(
@@ -339,7 +349,7 @@ def _full_scan_assign(
             actual_block,
             error_block,
             search_range=search_range,
-            adc_clip=adc_clip,
+            adc_clip=fit_clip,
             return_curve=collect_scan_losses,
         )
         best_t0 = _snap_t0_to_local_peak(
@@ -351,7 +361,7 @@ def _full_scan_assign(
             search_range=search_range,
         )
         shifted_block = _shift_block(cluster_fit, int(best_t0))
-        candidate_model = np.clip(base_block + shifted_block, None, adc_clip)
+        candidate_model = np.clip(base_block + shifted_block, None, fit_clip)
         candidate_error = compute_error_metric(candidate_model, actual_block, error_block)
         improvement = float(current_error - candidate_error)
 
@@ -449,7 +459,7 @@ def assign_small_clusters_v32(
     assignment_improvement_eps: float = 1e-4,
     greedy_loss_increase_tolerance: float = 0.0,
     search_range: int = 900,
-    adc_clip: float = 60780.0,
+    adc_clip: float | np.ndarray = 60780.0,
     t0_resolution: int = 5,
     pulse_peak_tick: int = 105,
     collect_scan_losses: bool = False,
@@ -630,7 +640,7 @@ def assign_small_clusters_v32(
                 tpcs = active_cluster_tpcs[int(clusterid)]
                 cluster_block = _stack_cluster_images(image_maps, int(clusterid), tpcs)
                 shifted_block = _shift_block(cluster_block, int(opt_t0))
-                candidate_model = np.clip(_stack_tpcs(base_image, tpcs) + shifted_block, None, adc_clip)
+                candidate_model = np.clip(_stack_tpcs(base_image, tpcs) + shifted_block, None, clip_hi_stack(adc_clip, tpcs))
                 candidate_error = compute_error_metric(candidate_model[0], tpc_block_actual, tpc_block_error)
                 improvement = float(current_error - candidate_error)
                 greedy_mode = "greedy_discrete"

@@ -13,6 +13,7 @@ try:
         _stack_cluster_images,
         _stack_tpcs,
     )
+    from light_saturation import clip_hi_stack
 except ModuleNotFoundError:  # pragma: no cover - notebook import fallback
     from M5p1.v3_2_global_matching import (
         assign_small_clusters_v32,
@@ -22,6 +23,7 @@ except ModuleNotFoundError:  # pragma: no cover - notebook import fallback
         _stack_cluster_images,
         _stack_tpcs,
     )
+    from M5p1.light_saturation import clip_hi_stack
 
 
 def _smooth_curve(curve: np.ndarray, width: int) -> np.ndarray:
@@ -158,7 +160,7 @@ def _evaluate_cluster_move(
     full_light_std: np.ndarray,
     labels_global: np.ndarray,
     hit_timestamps: np.ndarray,
-    adc_clip: float,
+    adc_clip: float | np.ndarray,
 ) -> dict[str, Any] | None:
     old_t0 = _current_cluster_t0(int(clusterid), labels_global, hit_timestamps)
     if old_t0 is None:
@@ -185,7 +187,7 @@ def _evaluate_cluster_move(
 
     current_score = compute_error_metric(base_block, actual_block, error_block)
     new_shifted = _shift_block(cluster_block, int(new_t0))
-    candidate_model = np.clip(base_without + new_shifted, None, adc_clip)
+    candidate_model = np.clip(base_without + new_shifted, None, clip_hi_stack(adc_clip, tpcs_arr))
     candidate_score = compute_error_metric(candidate_model, actual_block, error_block)
 
     return {
@@ -225,7 +227,7 @@ def rebalance_assigned_clusters_v33(
     min_move_ticks: int = 4,
     min_improvement: float = 1e-4,
     max_movable_energy_mev: float | None = None,
-    adc_clip: float = 60780.0,
+    adc_clip: float | np.ndarray = 60780.0,
 ) -> tuple[
     np.ndarray,
     np.ndarray,

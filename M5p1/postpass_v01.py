@@ -43,6 +43,7 @@ import numpy as np
 
 # flat M5p1 imports (resolved by M5p1.phase25_trial2_v_alpha_test._configure_paths)
 from v3_2_global_matching import _shift_block  # fractional shift, baseline=0
+from light_saturation import clip_hi
 
 ADC_CLIP = 60780.0
 
@@ -147,6 +148,8 @@ class _Chi2Scorer:
         self.err = np.maximum(np.asarray(ns["fullLightStd"], np.float32), 1e-6)
         # working copy: post-pass moves update it so later decisions see them
         self.base = np.asarray(ns["baseImage"], np.float32).copy()
+        # per-event per-channel saturation ceiling (n_tpc, n_ch) when the namespace carries one
+        self.clip = (ns.get("saturated_channel_cache") or {}).get("ceiling", ADC_CLIP)
         self.version = 0                       # bumped on every committed move
         self._sup = {}
         self._img = {}
@@ -161,6 +164,10 @@ class _Chi2Scorer:
             self._img[key] = img[rows]
         return self._img[key], self._sup[key]
 
+    def _bound(self, tp, rows):
+        """Upper clip bound for base[tp][rows] (legacy scalar or per-channel ceiling)."""
+        return clip_hi(self.clip, int(tp), None if isinstance(rows, slice) else rows)
+
     def chi2(self, cid: int, t: float) -> float:
         """MEAN chi2 of cluster cid placed at t, own contribution removed."""
         s = self.st[cid]
@@ -171,7 +178,7 @@ class _Chi2Scorer:
             base_s = self.base[tp][rows]
             if s["t0"] is not None:
                 base_s = np.clip(base_s - _shift_rows(img_s, s["t0"]), 0.0, None)
-            model = np.clip(base_s + _shift_rows(img_s, t), None, ADC_CLIP)
+            model = np.clip(base_s + _shift_rows(img_s, t), None, self._bound(tp, rows))
             act_s = self.act[tp][rows]
             err_s = self.err[tp][rows]
             num += float(((model - act_s) ** 2 / err_s).sum())
@@ -186,7 +193,7 @@ class _Chi2Scorer:
             blk = self.base[tp][rows]
             if s["t0"] is not None:
                 blk = blk - _shift_rows(img_s, s["t0"])
-            blk = np.clip(blk + _shift_rows(img_s, t_new), 0.0, ADC_CLIP)
+            blk = np.clip(blk + _shift_rows(img_s, t_new), 0.0, self._bound(tp, rows))
             self.base[tp][rows] = blk
         s["t0"] = float(t_new)
         self.version += 1

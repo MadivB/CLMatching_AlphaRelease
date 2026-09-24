@@ -291,7 +291,7 @@ def run_track_overlap_swap_rescue_v10_7_focused(
     min_t0_separation_ticks: int = 8,
     max_passes: int = 8,
     improvement_eps: float = 0.0,
-    adc_clip: float = 60780.0,
+    adc_clip: float | np.ndarray = 60780.0,
     search_range: int = 895,
     lock_swapped_clusters: bool = True,
 ) -> tuple[
@@ -377,7 +377,7 @@ def run_track_overlap_swap_rescue_v10_7_focused(
                 base_image=base_image,
                 full_light_waveform=full_light_waveform,
                 full_light_std=full_light_std,
-                adc_clip=float(adc_clip),
+                adc_clip=adc_clip,
             )
             improvement = float(current_score - swapped_score)
             considered_this_pass += 1
@@ -428,7 +428,7 @@ def run_track_overlap_swap_rescue_v10_7_focused(
             protected_track_shower_timestamps=protected_track_shower_timestamps,
             t0_candidates=t0_candidates,
             assignment_info=assignment_info,
-            adc_clip=float(adc_clip),
+            adc_clip=adc_clip,
             improvement=float(best_swap["improvement"]),
             absorbed_hit_parent=absorbed_hit_parent,
             trigger_pair_rank=int(best_swap["pair_rank"]),

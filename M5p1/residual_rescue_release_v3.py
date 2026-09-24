@@ -8,8 +8,10 @@ import plotly.graph_objects as go
 
 try:
     from v3_2_global_matching import _shift_block
+    from light_saturation import LEGACY_CLIP, clip_hi, saturated_mask
 except ModuleNotFoundError:
     from M5p1.v3_2_global_matching import _shift_block
+    from M5p1.light_saturation import LEGACY_CLIP, clip_hi, saturated_mask
 
 try:
     from plottingTools import VALID_GROUP_COLORS
@@ -168,11 +170,19 @@ def _run_residual_rescue_tpc_bound(
     if "saturated_channel_cache" in globals() and saturated_channel_cache is not None:
         veto_mask = np.asarray(saturated_channel_cache["veto_mask"][TPCid], dtype=bool)
     else:
-        veto_mask = np.sum(actual_full > 60700.0, axis=1) > 6
+        veto_mask = saturated_mask(actual_full, None)  # legacy ``actual > 60700`` rule (no ceiling at hand)
 
     keep_idx = np.flatnonzero(~veto_mask).astype(np.int32)
     if keep_idx.size == 0:
         raise RuntimeError(f"TPC {TPCid}: no unsaturated channels.")
+
+    # v1.2.2: clip the model to the per-event per-channel ceiling when the bound cache
+    # carries one; otherwise the (namespace-bound) ADC_CLIP scalar, else the legacy constant.
+    _sat_cache = globals().get("saturated_channel_cache")
+    if isinstance(_sat_cache, dict) and _sat_cache.get("ceiling") is not None:
+        clip_tpc = clip_hi(_sat_cache["ceiling"], TPCid)
+    else:
+        clip_tpc = clip_hi(globals().get("ADC_CLIP", LEGACY_CLIP), TPCid)
 
     actual_kept = actual_full[keep_idx]
     std_kept    = np.maximum(std_full[keep_idx], 1e-6)
@@ -820,7 +830,7 @@ def _run_residual_rescue_tpc_bound(
                 blocked_seed_hits_this_t0.update(map(int, selected_idx.tolist()))
                 continue
 
-            model_full = np.clip(model_full + current_delta, 0.0, ADC_CLIP)
+            model_full = np.clip(model_full + current_delta, 0.0, clip_tpc)
             for hidx in selected_idx:
                 hit_ts_out[int(hidx)] = np.float32(target_t0)
                 rescued_hits.add(int(hidx))
@@ -851,7 +861,7 @@ def _run_residual_rescue_tpc_bound(
             break
 
         if (not accepted_this_t0) and allow_keep_best_partial and (best_try is not None):
-            model_full = np.clip(model_full + best_try["delta"], 0.0, ADC_CLIP)
+            model_full = np.clip(model_full + best_try["delta"], 0.0, clip_tpc)
             for hidx in best_try["selected_idx"]:
                 hit_ts_out[int(hidx)] = np.float32(target_t0)
                 rescued_hits.add(int(hidx))

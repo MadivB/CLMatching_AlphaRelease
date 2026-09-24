@@ -6,10 +6,12 @@ import numpy as np
 
 try:
     from pulse_shapes import timeinterpolation
-    from v10_3_support import stack_cluster_fit_inputs_v10_3
+    from v10_3_support import stack_cluster_fit_inputs_v10_3, stacked_fit_clip_bound_v10_3
+    from light_saturation import clip_hi_stack
 except ModuleNotFoundError:
     from NewMLSection.pulse_shapes import timeinterpolation
-    from M5p1.v10_3_support import stack_cluster_fit_inputs_v10_3
+    from M5p1.v10_3_support import stack_cluster_fit_inputs_v10_3, stacked_fit_clip_bound_v10_3
+    from M5p1.light_saturation import clip_hi_stack
 
 
 def _stack_images(image_maps: dict[tuple[int, int], np.ndarray], cluster_id: int, tpcids: np.ndarray) -> np.ndarray:
@@ -53,7 +55,7 @@ def run_track_t0_fine_correction_v13_4(
     channel_support_cache: Any | None = None,
     saturated_channel_cache: Any | None = None,
     max_charge_tpc: int | None = None,
-    adc_clip: float = 60780.0,
+    adc_clip: float | np.ndarray = 60780.0,
     grid_offsets: np.ndarray | list[float] | None = None,
     improvement_eps: float = 0.0,
     candidate_min_sep: int = 2,
@@ -121,7 +123,7 @@ def run_track_t0_fine_correction_v13_4(
         old_shifted_r = old_shifted_full.reshape(sorted_tpcs.size, base_image.shape[1], base_image.shape[2])
 
         base_without = base_image.copy()
-        base_without[sorted_tpcs] = np.clip(base_without[sorted_tpcs] - old_shifted_r, 0.0, float(adc_clip))
+        base_without[sorted_tpcs] = np.clip(base_without[sorted_tpcs] - old_shifted_r, 0.0, clip_hi_stack(adc_clip, sorted_tpcs))
 
         selected_wave, selected_base, selected_actual, _selected_std, fit_support_meta = stack_cluster_fit_inputs_v10_3(
             clusterid=clusterid,
@@ -136,6 +138,7 @@ def run_track_t0_fine_correction_v13_4(
         )
         if selected_wave.size == 0:
             continue
+        fit_clip = stacked_fit_clip_bound_v10_3(adc_clip, fit_support_meta)
 
         candidate_rows = []
         for offset in grid_offsets:
@@ -143,7 +146,7 @@ def run_track_t0_fine_correction_v13_4(
             if candidate_t0 < 0.0 or candidate_t0 > 895.0:
                 continue
             shifted_fit = _shift_stacked_image(selected_wave, candidate_t0)
-            model = np.clip(shifted_fit + selected_base, None, float(adc_clip))
+            model = np.clip(shifted_fit + selected_base, None, fit_clip)
             loss = _unit_std_loss(model, selected_actual)
             candidate_rows.append(
                 {
@@ -163,7 +166,7 @@ def run_track_t0_fine_correction_v13_4(
         best = candidate_rows[int(order[0])]
         old_candidates = [row for row in candidate_rows if abs(float(row["offset"])) < 1e-6]
         old_loss = float(old_candidates[0]["loss"]) if len(old_candidates) > 0 else float(
-            _unit_std_loss(np.clip(_shift_stacked_image(selected_wave, old_t0) + selected_base, None, float(adc_clip)), selected_actual)
+            _unit_std_loss(np.clip(_shift_stacked_image(selected_wave, old_t0) + selected_base, None, fit_clip), selected_actual)
         )
 
         best_t0 = float(best["t0"])
@@ -174,7 +177,7 @@ def run_track_t0_fine_correction_v13_4(
         if changed:
             new_shifted_full = _shift_stacked_image(full_unshifted, best_t0)
             new_shifted_r = new_shifted_full.reshape(sorted_tpcs.size, base_image.shape[1], base_image.shape[2])
-            base_image[sorted_tpcs] = np.clip(base_without[sorted_tpcs] + new_shifted_r, None, float(adc_clip))
+            base_image[sorted_tpcs] = np.clip(base_without[sorted_tpcs] + new_shifted_r, None, clip_hi_stack(adc_clip, sorted_tpcs))
             hit_timestamps[hit_mask] = np.float32(best_t0)
             n_changed += 1
 

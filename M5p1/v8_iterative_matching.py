@@ -19,6 +19,7 @@ try:
     from v4_hierarchical_matching import rebalance_step4_clusters_v4
     from v8_leftover_absorption import try_absorb_leftovers_for_parent_v8
     from v12_saturation_mask import materialize_support_entry_v12
+    from light_saturation import clip_hi, clip_scalar
 except ModuleNotFoundError:  # pragma: no cover - notebook import fallback
     from M5p1.v3_2_global_matching import (
         _assign_cluster_at_t0,
@@ -34,6 +35,7 @@ except ModuleNotFoundError:  # pragma: no cover - notebook import fallback
     from M5p1.v4_hierarchical_matching import rebalance_step4_clusters_v4
     from M5p1.v8_leftover_absorption import try_absorb_leftovers_for_parent_v8
     from M5p1.v12_saturation_mask import materialize_support_entry_v12
+    from M5p1.light_saturation import clip_hi, clip_scalar
 
 
 def _maybe_absorb_leftovers_after_assignment(
@@ -48,7 +50,7 @@ def _maybe_absorb_leftovers_after_assignment(
     hit_timestamps: np.ndarray,
     assignment_info: dict[tuple[int, int], dict[str, Any]],
     leftover_absorption_context: dict[str, Any] | None,
-    adc_clip: float,
+    adc_clip: float | np.ndarray,
     saturated_channel_cache: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     if leftover_absorption_context is None:
@@ -80,13 +82,13 @@ def _maybe_absorb_leftovers_after_assignment(
         channel_support_cache=channel_support_cache,
         target_scale=float(leftover_absorption_context.get("target_scale", 1e-3)),
         batch_size=int(leftover_absorption_context.get("batch_size", 4)),
-        raw_clip=tuple(leftover_absorption_context.get("raw_clip", (0.0, float(adc_clip)))),
+        raw_clip=tuple(leftover_absorption_context.get("raw_clip", (0.0, clip_scalar(adc_clip)))),
         min_prediction_threshold=leftover_absorption_context.get("min_prediction_threshold", 100.0),
         device_policy=str(leftover_absorption_context.get("device_policy", "auto")),
         support_light_fraction=float(leftover_absorption_context.get("support_light_fraction", 0.90)),
         support_max_gap=int(leftover_absorption_context.get("support_max_gap", 2)),
         improvement_eps=float(leftover_absorption_context.get("improvement_eps", 0.0)),
-        adc_clip=float(adc_clip),
+        adc_clip=adc_clip,
         saturated_channel_cache=saturated_channel_cache,
     )
     if log is not None:
@@ -109,7 +111,7 @@ def _full_scan_primary_clusters(
     unassigned_by_tpc: dict[int, list[int]],
     cluster_energies: dict[int, float],
     search_range: int,
-    adc_clip: float,
+    adc_clip: float | np.ndarray,
     collect_scan_losses: bool,
     assignment_improvement_eps: float,
     stage_name: str,
@@ -153,7 +155,7 @@ def _full_scan_primary_clusters(
             rejected_mode=str(rejected_mode),
             assignment_improvement_eps=float(assignment_improvement_eps),
             search_range=int(search_range),
-            adc_clip=float(adc_clip),
+            adc_clip=adc_clip,
             t0_resolution=5,
             pulse_peak_tick=105,
             collect_scan_losses=collect_scan_losses,
@@ -176,7 +178,7 @@ def _full_scan_primary_clusters(
                 hit_timestamps=hit_timestamps,
                 assignment_info=assignment_info,
                 leftover_absorption_context=leftover_absorption_context,
-                adc_clip=float(adc_clip),
+                adc_clip=adc_clip,
                 saturated_channel_cache=saturated_channel_cache,
             )
 
@@ -245,10 +247,12 @@ def _score_single_tpc_cluster_t0(
     actual_block: np.ndarray,
     error_block: np.ndarray,
     t0: int,
-    adc_clip: float,
+    adc_clip: float | np.ndarray,
 ) -> float:
+    # ``adc_clip``: legacy scalar, or a bound already resolved for ``base_block``'s rows
+    # (``clip_hi(ceiling, tpcid, channel_indices)``).
     shifted = _shift_block(np.asarray(cluster_wave, dtype=np.float32)[None, :, :], int(t0))[0]
-    candidate_model = np.clip(np.asarray(base_block, dtype=np.float32) + shifted, None, float(adc_clip))
+    candidate_model = np.clip(np.asarray(base_block, dtype=np.float32) + shifted, None, adc_clip)
     return float(
         compute_error_metric(
             candidate_model,
@@ -321,7 +325,7 @@ def _scan_cluster_on_current_base(
     channel_support_cache: dict[tuple[int, int], dict[str, Any]] | None,
     saturated_channel_cache: dict[int, np.ndarray] | None,
     search_range: int,
-    adc_clip: float,
+    adc_clip: float | np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict[str, Any], int, float, np.ndarray, float]:
     full_wave, selected_wave, channel_indices, support_meta = _get_single_tpc_support(
         clusterid=int(clusterid),
@@ -346,7 +350,7 @@ def _scan_cluster_on_current_base(
         actual_selected[None, :, :],
         error_selected[None, :, :],
         search_range=int(search_range),
-        adc_clip=float(adc_clip),
+        adc_clip=clip_hi(adc_clip, int(tpcid), channel_indices),
         return_curve=True,
     )
     return (
@@ -373,7 +377,7 @@ def _masked_loss_matrix_single_tpc(
     clusters: np.ndarray,
     placed_mask: np.ndarray,
     t0_candidates: list[int],
-    adc_clip: float,
+    adc_clip: float | np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     remaining_clusters = np.asarray(clusters[~placed_mask], dtype=int)
     n_remaining = int(len(remaining_clusters))
@@ -413,7 +417,7 @@ def _masked_loss_matrix_single_tpc(
                 stack[col_idx] = block
             elif 0 < t0i < n_t:
                 stack[col_idx, :, t0i:] = block[:, : n_t - t0i]
-        model = np.clip(base_selected[None, :, :] + stack, None, float(adc_clip))
+        model = np.clip(base_selected[None, :, :] + stack, None, clip_hi(adc_clip, int(tpcid), channel_indices))
         err = np.maximum(np.asarray(error_selected, dtype=np.float32), 1e-6)
         loss_matrix[row_idx, :] = (
             np.square(model - np.asarray(actual_selected, dtype=np.float32)[None]) / err[None]
@@ -439,7 +443,7 @@ def _try_t0_expansion_for_cluster(
     unassigned_by_tpc: dict[int, list[int]],
     cluster_energy: float,
     search_range: int,
-    adc_clip: float,
+    adc_clip: float | np.ndarray,
     collect_scan_losses: bool,
     full_scan_assign_eps: float,
     backward_peak_align_ticks: int,
@@ -456,7 +460,7 @@ def _try_t0_expansion_for_cluster(
         channel_support_cache=channel_support_cache,
         saturated_channel_cache=saturated_channel_cache,
         search_range=int(search_range),
-        adc_clip=float(adc_clip),
+        adc_clip=adc_clip,
     )
     base_tpc, actual_tpc, error_tpc = _extract_selected_tpc_blocks(
         tpcid=int(tpcid),
@@ -482,7 +486,7 @@ def _try_t0_expansion_for_cluster(
             actual_block=actual_tpc,
             error_block=error_tpc,
             t0=int(aligned_t0),
-            adc_clip=float(adc_clip),
+            adc_clip=clip_hi(adc_clip, int(tpcid), channel_indices),
         )
 
     improvement = float(current_error - float(aligned_score))
@@ -549,7 +553,7 @@ def _try_t0_expansion_for_cluster(
             stage="iterative_full_scan_assign",
             error_after=float(aligned_score),
             improvement=float(improvement),
-            adc_clip=float(adc_clip),
+            adc_clip=adc_clip,
             max_t0=int(search_range),
         )
         assignment_info[(int(clusterid), int(tpcid))]["objective_t0"] = float(best_t0)
@@ -565,7 +569,7 @@ def _try_t0_expansion_for_cluster(
             hit_timestamps=hit_timestamps,
             assignment_info=assignment_info,
             leftover_absorption_context=leftover_absorption_context,
-            adc_clip=float(adc_clip),
+            adc_clip=adc_clip,
             saturated_channel_cache=saturated_channel_cache,
         )
         return (
@@ -639,7 +643,7 @@ def _iterative_band_matrix_assign_tpc(
     positive_row_margin: float,
     matrix_worsen_tolerance_norm: float,
     search_range: int,
-    adc_clip: float,
+    adc_clip: float | np.ndarray,
     collect_scan_losses: bool,
     full_scan_assign_eps: float,
     backward_peak_align_ticks: int,
@@ -696,7 +700,7 @@ def _iterative_band_matrix_assign_tpc(
                 unassigned_by_tpc=unassigned_by_tpc,
                 cluster_energy=float(anchor_energy),
                 search_range=int(search_range),
-                adc_clip=float(adc_clip),
+                adc_clip=adc_clip,
                 collect_scan_losses=collect_scan_losses,
                 full_scan_assign_eps=float(full_scan_assign_eps),
                 backward_peak_align_ticks=int(backward_peak_align_ticks),
@@ -726,7 +730,7 @@ def _iterative_band_matrix_assign_tpc(
             clusters=np.asarray(band_clusters, dtype=int),
             placed_mask=np.zeros(len(band_clusters), dtype=bool),
             t0_candidates=candidate_grid,
-            adc_clip=float(adc_clip),
+            adc_clip=adc_clip,
         )
         if loss_matrix.size == 0 or len(band_now) == 0:
             break
@@ -768,7 +772,7 @@ def _iterative_band_matrix_assign_tpc(
                 unassigned_by_tpc=unassigned_by_tpc,
                 cluster_energy=float(cluster_energies.get(int(expand_cluster), 0.0)),
                 search_range=int(search_range),
-                adc_clip=float(adc_clip),
+                adc_clip=adc_clip,
                 collect_scan_losses=collect_scan_losses,
                 full_scan_assign_eps=float(full_scan_assign_eps),
                 backward_peak_align_ticks=int(backward_peak_align_ticks),
@@ -812,7 +816,7 @@ def _iterative_band_matrix_assign_tpc(
                 unassigned_by_tpc=unassigned_by_tpc,
                 cluster_energy=float(cluster_energies.get(int(clusterid), 0.0)),
                 search_range=int(search_range),
-                adc_clip=float(adc_clip),
+                adc_clip=adc_clip,
                 collect_scan_losses=collect_scan_losses,
                 full_scan_assign_eps=float(full_scan_assign_eps),
                 backward_peak_align_ticks=int(backward_peak_align_ticks),
@@ -857,7 +861,7 @@ def _iterative_band_matrix_assign_tpc(
             search_range=int(search_range),
         )
         shifted = _shift_block(np.asarray(selected_wave, dtype=np.float32)[None, :, :], int(aligned_t0))[0]
-        candidate_model = np.clip(base_tpc + shifted, None, float(adc_clip))
+        candidate_model = np.clip(base_tpc + shifted, None, clip_hi(adc_clip, int(tpcid), channel_indices))
         candidate_error = compute_error_metric(candidate_model, actual_sel, error_sel)
         raw_delta = float(candidate_error - float(current_error))
 
@@ -877,7 +881,7 @@ def _iterative_band_matrix_assign_tpc(
             stage="iterative_matrix",
             error_after=float(candidate_error),
             improvement=float(-raw_delta),
-            adc_clip=float(adc_clip),
+            adc_clip=adc_clip,
             max_t0=int(search_range),
         )
         assignment_info[(int(clusterid), int(tpcid))]["objective_t0"] = float(opt_t0)
@@ -893,7 +897,7 @@ def _iterative_band_matrix_assign_tpc(
             hit_timestamps=hit_timestamps,
             assignment_info=assignment_info,
             leftover_absorption_context=leftover_absorption_context,
-            adc_clip=float(adc_clip),
+            adc_clip=adc_clip,
             saturated_channel_cache=saturated_channel_cache,
         )
         log = {
@@ -961,7 +965,7 @@ def assign_small_clusters_v8(
     matrix_worsen_tolerance_norm: float = 0.15,
     full_scan_assign_eps: float = 0.0,
     search_range: int = 895,
-    adc_clip: float = 60780.0,
+    adc_clip: float | np.ndarray = 60780.0,
     collect_scan_losses: bool = False,
     assignment_improvement_eps: float = 0.0,
     backward_peak_align_ticks: int = 5,
@@ -1057,7 +1061,7 @@ def assign_small_clusters_v8(
         unassigned_by_tpc=unassigned_by_tpc,
         cluster_energies=cluster_energies,
         search_range=int(search_range),
-        adc_clip=float(adc_clip),
+        adc_clip=adc_clip,
         collect_scan_losses=collect_scan_losses,
         assignment_improvement_eps=float(assignment_improvement_eps),
         stage_name="primary_full_scan",
@@ -1104,7 +1108,7 @@ def assign_small_clusters_v8(
             positive_row_margin=float(positive_row_margin),
             matrix_worsen_tolerance_norm=float(matrix_worsen_tolerance_norm),
             search_range=int(search_range),
-            adc_clip=float(adc_clip),
+            adc_clip=adc_clip,
             collect_scan_losses=collect_scan_losses,
             full_scan_assign_eps=float(full_scan_assign_eps),
             backward_peak_align_ticks=int(backward_peak_align_ticks),

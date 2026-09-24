@@ -89,7 +89,7 @@ from v11_phased_matching import (  # noqa: E402
 # Constants from the notebook.
 N_TPCS = 70
 WVFM_LEN = 1000
-ADC_CLIP = 60780.0
+ADC_CLIP = 60780.0  # legacy fallback; the per-event ceiling in ns["saturated_channel_cache"] is preferred
 T0_RESOLUTION = 5
 V11_LARGE_CLUSTER_ENERGY_MEV = 50.0
 V11_MINIMUM_ITERATIVE_ENERGY_MEV = 0.5
@@ -367,7 +367,7 @@ def _run_phase2(ns: dict[str, Any], *, verbose: bool = False) -> None:
         large_cluster_energy_mev=V11_LARGE_CLUSTER_ENERGY_MEV,
         minimum_iterative_energy_mev=V11_MINIMUM_ITERATIVE_ENERGY_MEV,
         search_range=895,
-        adc_clip=ADC_CLIP,
+        adc_clip=(ns.get("saturated_channel_cache") or {}).get("ceiling", ADC_CLIP),
         collect_scan_losses=RETURN_FULL_SCAN_LOSSES,
         assignment_improvement_eps=V11_PRIMARY_ASSIGNMENT_IMPROVEMENT_EPS,
         flash_seed_t0s_by_tpc=ns["v8_1_flash_seed_t0s_by_tpc"],

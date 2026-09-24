@@ -7,7 +7,8 @@ import numpy as np
 from pulse_shapes import timeinterpolation
 from fast_unit_track_scan import unit_likelihood_curve_with_base_v1
 
-from v10_3_support import stack_cluster_fit_inputs_v10_3
+from v10_3_support import stack_cluster_fit_inputs_v10_3, stacked_fit_clip_bound_v10_3
+from light_saturation import clip_hi_stack
 
 
 def max_likelihood_curve_with_base_v10_3(
@@ -17,8 +18,10 @@ def max_likelihood_curve_with_base_v10_3(
     error_metric: np.ndarray,
     *,
     search_range: int = 895,
-    adc_clip: float = 60780.0,
+    adc_clip: float | np.ndarray = 60780.0,
 ) -> tuple[np.ndarray, np.ndarray]:
+    # ``adc_clip``: legacy scalar, or the per-row (n_rows, 1) bound from
+    # ``stacked_fit_clip_bound_v10_3`` matching the stacked/selected rows of ``predicted``.
     pred = np.asarray(predicted, dtype=np.float32)
     base_ = np.asarray(base, dtype=np.float32)
     act = np.asarray(actual, dtype=np.float32)
@@ -43,7 +46,7 @@ def max_likelihood_curve_with_base_v10_3(
             shifted[:, int(t0):] = pred[:, :-int(t0)]
         else:
             shifted[:] = pred
-        model = np.clip(shifted + base_, None, float(adc_clip))
+        model = np.clip(shifted + base_, None, adc_clip)
         errors[idx] = np.sum((model - act) ** 2 / err) / float(n_ticks)
 
     return shifts, errors
@@ -138,7 +141,7 @@ def _fit_track_t0_with_shower_guard_v13_2(
     label_info: dict[int, dict[str, Any]],
     channel_support_cache: dict[tuple[int, int], dict[str, Any]] | None,
     search_range: int,
-    adc_clip: float,
+    adc_clip: float | np.ndarray,
     t0_resolution: int,
     waveform_len: int,
     min_shower_energy_mev: float,
@@ -164,7 +167,7 @@ def _fit_track_t0_with_shower_guard_v13_2(
         all_actual_fit,
         all_std_fit,
         search_range=int(search_range),
-        adc_clip=float(adc_clip),
+        adc_clip=stacked_fit_clip_bound_v10_3(adc_clip, all_fit_support_meta),
     )
     all_raw_t0 = int(all_shifts[int(np.argmin(all_errors))])
     all_refined_t0 = int(
@@ -234,7 +237,7 @@ def _fit_track_t0_with_shower_guard_v13_2(
         clean_actual_fit,
         clean_std_fit,
         search_range=int(search_range),
-        adc_clip=float(adc_clip),
+        adc_clip=stacked_fit_clip_bound_v10_3(adc_clip, clean_fit_support_meta),
     )
     clean_raw_t0 = int(clean_shifts[int(np.argmin(clean_errors))])
     clean_refined_t0 = int(
@@ -305,7 +308,7 @@ def run_track_second_pass_rescan_v10_3(
     cluster_full_scan_loss_dict: dict[int, dict[str, Any]] | None = None,
     absorbed_hit_parent: np.ndarray | None = None,
     search_range: int = 895,
-    adc_clip: float = 60780.0,
+    adc_clip: float | np.ndarray = 60780.0,
     t0_resolution: int = 5,
     waveform_len: int = 1000,
     collect_scan_losses: bool = False,
@@ -380,7 +383,7 @@ def run_track_second_pass_rescan_v10_3(
                 label_info=label_info,
                 channel_support_cache=channel_support_cache,
                 search_range=int(search_range),
-                adc_clip=float(adc_clip),
+                adc_clip=adc_clip,
                 t0_resolution=int(t0_resolution),
                 waveform_len=int(waveform_len),
                 min_shower_energy_mev=float(min_shower_energy_mev),
@@ -406,7 +409,7 @@ def run_track_second_pass_rescan_v10_3(
                 actual_fit,
                 std_fit,
                 search_range=int(search_range),
-                adc_clip=float(adc_clip),
+                adc_clip=stacked_fit_clip_bound_v10_3(adc_clip, fit_support_meta),
             )
             raw_t0_ = int(shifts_[int(np.argmin(errors_))])
             fit_decision = {
@@ -460,7 +463,7 @@ def run_track_second_pass_rescan_v10_3(
 
         shifted_new = timeinterpolation(full_wave_stack, shift=float(new_t0), baseline=0).astype(np.float32)
         shifted_new = shifted_new.reshape(sorted_tpcs.size, full_light_waveform.shape[1], -1)
-        base_image[sorted_tpcs] = np.clip(base_image[sorted_tpcs] + shifted_new, None, float(adc_clip))
+        base_image[sorted_tpcs] = np.clip(base_image[sorted_tpcs] + shifted_new, None, clip_hi_stack(adc_clip, sorted_tpcs))
 
         hit_timestamps[np.asarray(labels_global, dtype=int) == int(clusterid)] = float(new_t0)
         if absorbed_hit_parent is not None:

@@ -12,8 +12,10 @@ except Exception:  # pragma: no cover - plotting is optional in batch contexts
 
 try:
     from v3_2_global_matching import _shift_block
+    from light_saturation import clip_hi, saturated_mask
 except ModuleNotFoundError:  # pragma: no cover - package import fallback
     from M5p1.v3_2_global_matching import _shift_block
+    from M5p1.light_saturation import clip_hi, saturated_mask
 
 
 PULSE_PEAK_TICK = 105
@@ -40,7 +42,11 @@ def _veto_mask_for_tpc(
 ) -> np.ndarray:
     if isinstance(saturated_channel_cache, dict) and "veto_mask" in saturated_channel_cache:
         return np.asarray(saturated_channel_cache["veto_mask"][int(tpcid)], dtype=bool)
-    return np.sum(np.asarray(actual_tpc, dtype=np.float32) > 60700.0, axis=1) > 6
+    ceiling_tpc = None
+    if isinstance(saturated_channel_cache, dict) and saturated_channel_cache.get("ceiling") is not None:
+        ceiling_tpc = np.asarray(saturated_channel_cache["ceiling"], dtype=np.float32)[int(tpcid)]
+    # None -> legacy ``actual > 60700`` rule; per-channel ceiling -> ``actual > ceiling - 80``
+    return saturated_mask(np.asarray(actual_tpc, dtype=np.float32), ceiling_tpc)
 
 
 def _weighted_loss(
@@ -541,7 +547,7 @@ def score_component_reassignment_options(
     source_protection_weight: float = 1.0,
     half_window_ticks: int = 18,
     pad_ticks: int = 12,
-    adc_clip: float = ADC_CLIP,
+    adc_clip: float | np.ndarray = ADC_CLIP,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     holes_by_tpc: dict[int, list[dict[str, Any]]] = {}
@@ -602,7 +608,7 @@ def score_component_reassignment_options(
             after_model = np.clip(
                 model_kept + target_add - float(source_protection_weight) * source_sub,
                 0.0,
-                float(adc_clip),
+                clip_hi(adc_clip, tpcid, keep_idx),
             )
             after = _weighted_loss(
                 after_model,
@@ -673,7 +679,7 @@ def _score_add_component(
     overflow_weight: float,
     half_window_ticks: int,
     pad_ticks: int,
-    adc_clip: float,
+    adc_clip: float | np.ndarray,
 ) -> dict[str, Any] | None:
     actual_tpc = np.asarray(full_light_waveform[int(tpcid)], dtype=np.float32)
     model_tpc = np.asarray(base_image[int(tpcid)], dtype=np.float32)
@@ -700,7 +706,7 @@ def _score_add_component(
         time_mask,
         overflow_weight=float(overflow_weight),
     )
-    after_model = np.clip(model_kept + shifted, 0.0, float(adc_clip))
+    after_model = np.clip(model_kept + shifted, 0.0, clip_hi(adc_clip, int(tpcid), keep_idx))
     after = _weighted_loss(
         after_model,
         actual_kept,
@@ -733,7 +739,7 @@ def _score_move_component(
     overflow_weight: float,
     half_window_ticks: int,
     pad_ticks: int,
-    adc_clip: float,
+    adc_clip: float | np.ndarray,
 ) -> dict[str, Any] | None:
     actual_tpc = np.asarray(full_light_waveform[int(tpcid)], dtype=np.float32)
     model_tpc = np.asarray(base_image[int(tpcid)], dtype=np.float32)
@@ -762,7 +768,7 @@ def _score_move_component(
         time_mask,
         overflow_weight=float(overflow_weight),
     )
-    after_model = np.clip(model_kept + add - sub, 0.0, float(adc_clip))
+    after_model = np.clip(model_kept + add - sub, 0.0, clip_hi(adc_clip, int(tpcid), keep_idx))
     after = _weighted_loss(
         after_model,
         actual_kept,
@@ -923,7 +929,7 @@ def run_component_rescue_phase3_v4(
     overflow_weight: float = 3.0,
     half_window_ticks: int = 18,
     pad_ticks: int = 12,
-    adc_clip: float = ADC_CLIP,
+    adc_clip: float | np.ndarray = ADC_CLIP,
     verbose: bool = True,
 ) -> tuple[
     np.ndarray,
@@ -1021,7 +1027,7 @@ def run_component_rescue_phase3_v4(
                         overflow_weight=float(overflow_weight),
                         half_window_ticks=int(half_window_ticks),
                         pad_ticks=int(pad_ticks),
-                        adc_clip=float(adc_clip),
+                        adc_clip=adc_clip,
                     )
                     if score is None:
                         continue
@@ -1051,7 +1057,7 @@ def run_component_rescue_phase3_v4(
             comp = best["component"]
             image = np.asarray(best["image"], dtype=np.float32)
             shifted = _shift_block(image[None, :, :], int(best["target_t0"]), baseline=0.0)[0]
-            base_image[int(tpcid)] = np.clip(base_image[int(tpcid)] + shifted, 0.0, float(adc_clip))
+            base_image[int(tpcid)] = np.clip(base_image[int(tpcid)] + shifted, 0.0, clip_hi(adc_clip, int(tpcid)))
             hit_timestamps[np.asarray(comp.hit_indices, dtype=np.int64)] = np.float32(best["target_t0"])
 
             assigned_components[int(comp.component_id)] = comp
@@ -1167,7 +1173,7 @@ def run_component_rescue_phase3_v4(
                         overflow_weight=float(overflow_weight),
                         half_window_ticks=int(half_window_ticks),
                         pad_ticks=int(pad_ticks),
-                        adc_clip=float(adc_clip),
+                        adc_clip=adc_clip,
                     )
                     if score is None:
                         continue
@@ -1199,7 +1205,7 @@ def run_component_rescue_phase3_v4(
             image = component_images[comp_id]
             target = _shift_block(image[None, :, :], int(best_move["target_t0"]), baseline=0.0)[0]
             source = _shift_block(image[None, :, :], int(best_move["source_t0"]), baseline=0.0)[0]
-            base_image[int(tpcid)] = np.clip(base_image[int(tpcid)] + target - source, 0.0, float(adc_clip))
+            base_image[int(tpcid)] = np.clip(base_image[int(tpcid)] + target - source, 0.0, clip_hi(adc_clip, int(tpcid)))
             comp = best_move["component"]
             hit_timestamps[np.asarray(comp.hit_indices, dtype=np.int64)] = np.float32(best_move["target_t0"])
             component_current_t0[comp_id] = int(best_move["target_t0"])
@@ -1263,7 +1269,7 @@ def apply_component_reassignment_preview(
     base_image: np.ndarray,
     hit_timestamps: np.ndarray,
     component_energy_fraction: float | None = None,
-    adc_clip: float = ADC_CLIP,
+    adc_clip: float | np.ndarray = ADC_CLIP,
 ) -> tuple[np.ndarray, np.ndarray]:
     base_out = np.asarray(base_image, dtype=np.float32).copy()
     t_out = np.asarray(hit_timestamps, dtype=np.float32).copy()
@@ -1280,7 +1286,7 @@ def apply_component_reassignment_preview(
         source = _shift_block(image[None, :, :], int(source_t0), baseline=0.0)[0]
     else:
         source = np.zeros_like(target, dtype=np.float32)
-    base_out[tpcid] = np.clip(base_out[tpcid] + target - source, 0.0, float(adc_clip))
+    base_out[tpcid] = np.clip(base_out[tpcid] + target - source, 0.0, clip_hi(adc_clip, tpcid))
     t_out[np.asarray(row["hit_indices"], dtype=np.int64)] = np.float32(row["target_t0"])
     return base_out, t_out
 

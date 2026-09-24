@@ -16,6 +16,7 @@ import numpy as np
 
 try:
     from . import phase25_amendment as p25
+    from .light_saturation import clip_hi
     from .flash_cluster_table import (
         ensure_flash_cluster_flags,
         flash_cluster_table_rows,
@@ -25,6 +26,7 @@ try:
     from .truth_plotting import extract_event_hit_energy_and_truth_t0
 except Exception:  # pragma: no cover - direct notebook import fallback
     import phase25_amendment as p25
+    from light_saturation import clip_hi
     from flash_cluster_table import (
         ensure_flash_cluster_flags,
         flash_cluster_table_rows,
@@ -371,6 +373,7 @@ def run_large_cluster_flash_grid_correction_from_namespace(
     flash_by_tpc = _as_tpc_dict(raw_flash if raw_flash is not None else t0_candidates)
 
     cfg25 = _make_phase25_config(config, enable_light=False, enable_spatial=False)
+    cfg25.adc_clip = _namespace_adc_clip(namespace, cfg25.adc_clip)
     rows: list[dict[str, Any]] = []
 
     candidates = []
@@ -421,7 +424,7 @@ def run_large_cluster_flash_grid_correction_from_namespace(
                 for offset in config.large_grid_offsets_ticks:
                     cand_t0 = float(flash_t0) + float(offset)
                     new_shifted = _shift_image_fractional(cluster_img, cand_t0, nt=nt)
-                    trial_model = np.clip(base_without + new_shifted, 0.0, float(cfg25.adc_clip))
+                    trial_model = np.clip(base_without + new_shifted, 0.0, clip_hi(cfg25.adc_clip, int(tpc)))
                     loss = _weighted_loss_window(trial_model, actual[tpc], std[tpc], [current_t0, cand_t0], cfg25)
                     trial_rows.append((float(loss), float(cand_t0), float(flash_t0), float(offset), trial_model))
             if not trial_rows:
@@ -478,6 +481,15 @@ def run_large_cluster_flash_grid_correction_from_namespace(
         "accepted_rows": [r for r in rows if r.get("accepted")],
         "elapsed_s": float(time.time() - t_start),
     }
+
+
+def _namespace_adc_clip(namespace: dict[str, Any], fallback: Any) -> Any:
+    """Per-event per-channel saturation ceiling (n_tpc, n_ch) recorded by the first stage in
+    ``namespace["saturated_channel_cache"]["ceiling"]``; ``fallback`` (legacy scalar) otherwise."""
+    cache = namespace.get("saturated_channel_cache") if hasattr(namespace, "get") else None
+    if isinstance(cache, dict) and cache.get("ceiling") is not None:
+        return cache["ceiling"]
+    return fallback
 
 
 def _make_phase25_config(
@@ -868,7 +880,7 @@ def _evaluate_trial2_light_gate(
     std = np.maximum(np.asarray(full_light_std[tpc], dtype=np.float32), 1e-6)
     before_model = np.asarray(base_image[tpc], dtype=np.float32)
     delta = np.asarray(trial.get("delta", np.zeros_like(before_model)), dtype=np.float32)
-    after_model = np.clip(before_model + delta, 0.0, float(cfg25.adc_clip))
+    after_model = np.clip(before_model + delta, 0.0, clip_hi(cfg25.adc_clip, tpc))
 
     before = _overflow_summary(t0=old_t0, model_tpc=before_model, actual_tpc=actual, std_tpc=std, keep=keep, cfg=cfg25)
     after = _overflow_summary(t0=old_t0, model_tpc=after_model, actual_tpc=actual, std_tpc=std, keep=keep, cfg=cfg25)
@@ -1156,6 +1168,7 @@ def run_trial2_phase25_from_namespace(
         large_result = run_large_cluster_flash_grid_correction_from_namespace(namespace, config=cfg, commit=True)
 
     cfg25_spatial = _make_phase25_config(cfg, enable_spatial=cfg.enable_spatial, enable_light=False)
+    cfg25_spatial.adc_clip = _namespace_adc_clip(namespace, cfg25_spatial.adc_clip)
     spatial_result = p25.run_phase25_amendment_from_namespace(namespace, config=cfg25_spatial, commit=True)
 
     base_out = np.asarray(spatial_result["baseImage"], dtype=np.float32).copy()
@@ -1171,6 +1184,7 @@ def run_trial2_phase25_from_namespace(
     full_std = np.asarray(namespace.get("fullLightStd", namespace.get("fullLightStd_phase2", np.ones_like(full_light))), dtype=np.float32)
     t0_candidates = _get(namespace, "t0Candidates")
     cfg25_light = _make_phase25_config(cfg, enable_spatial=False, enable_light=True)
+    cfg25_light.adc_clip = _namespace_adc_clip(namespace, cfg25_light.adc_clip)
     if bool(cfg.light_use_physical_chi2):
         # Match the physical-loss audit cell: make p25 permissive and let the
         # dChi2 gate below make the final decision.

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -145,6 +146,8 @@ def predict_first_stage_images_and_std(
     full_light_waveform: np.ndarray,
     models: ModelBundle,
     config: FirstStageConfig | None = None,
+    sat_ceiling: np.ndarray | None = None,
+    light_clipped: np.ndarray | None = None,
 ) -> PredictionBundle:
     config = FirstStageConfig() if config is None else config
 
@@ -252,10 +255,20 @@ def predict_first_stage_images_and_std(
     t_support = time.perf_counter() - t0
 
     t0 = time.perf_counter()
+    # v1.2.2: the veto and the model clip use the per-channel rail (2**15-1 minus the dynamic
+    # baseline) carried in EventData.sat_ceiling; the cache exposes it as "ceiling" for every
+    # later stage.  Without it (old callers) the legacy 60700/60780 constants apply.
+    # A/B switch: CL_SAT_LEGACY=1 in the environment ignores the per-channel ceiling and
+    # reproduces the pre-v1.2.2 constants (60780 clip, 60700 veto) end to end.
+    if os.environ.get("CL_SAT_LEGACY", "") not in ("", "0"):
+        sat_ceiling, light_clipped = None, None
     saturated_channel_cache, saturated_channel_summary = build_saturated_channel_cache_v12(
         full_light_waveform,
         clip_threshold=config.support.saturation_clip_threshold,
         max_clip_ticks=config.support.saturation_max_clip_ticks,
+        ceiling=sat_ceiling,
+        clipped=light_clipped,
+        clip_margin=float(getattr(config.support, "saturation_clip_margin", 80.0)),
     )
     support_cache, saturation_support_summary = apply_saturation_veto_to_support_cache_v12(
         support_cache,

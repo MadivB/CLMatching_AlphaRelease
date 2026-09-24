@@ -24,6 +24,11 @@ try:
 except ModuleNotFoundError:
     from M5p1ReleaseVersion.NewMLSection.ML_NDfull_perceiver import group_voxelize_pairs, predict_phi
 
+try:
+    from light_saturation import clip_hi, saturated_mask
+except ModuleNotFoundError:
+    from M5p1.light_saturation import clip_hi, saturated_mask
+
 
 __all__ = [
     "Phase25Config",
@@ -45,7 +50,7 @@ class Phase25Config:
     long_track_keywords: tuple[str, ...] = ("track",)
     long_track_exclude_keywords: tuple[str, ...] = ("shower",)
     long_track_min_tpcs: int = 3
-    adc_clip: float = 60780.0
+    adc_clip: float | np.ndarray = 60780.0  # legacy scalar, or the per-event (n_tpc, n_ch) ceiling
     verbose: bool = True
     max_move_energy_per_tpc_mev: float | None = 80.0
 
@@ -198,7 +203,16 @@ def _keep_channel_indices(
         except Exception:
             pass
     actual = np.asarray(actual_full[int(TPCid)], dtype=np.float32)
-    veto = np.sum(actual > 60700.0, axis=1) > 6
+    ceiling_tpc = None
+    if saturated_channel_cache is not None:
+        try:
+            ceiling = saturated_channel_cache.get("ceiling") if hasattr(saturated_channel_cache, "get") else None
+            if ceiling is not None:
+                ceiling_tpc = np.asarray(ceiling, dtype=np.float32)[int(TPCid)]
+        except Exception:
+            ceiling_tpc = None
+    # None -> legacy ``actual > 60700`` rule; per-channel ceiling -> ``actual > ceiling - 80``
+    veto = saturated_mask(actual, ceiling_tpc)
     return np.flatnonzero(~veto).astype(np.int32)
 
 
@@ -988,7 +1002,7 @@ def _exact_update_affected_families(
         old_shifted = _shift_image(old_imgs[(tpc, t0)], t0, nt=nt)
         new_shifted = _shift_image(new_imgs[(tpc, t0)], t0, nt=nt)
         delta = new_shifted - old_shifted
-        out[int(tpc)] = np.clip(out[int(tpc)] + delta, 0.0, float(cfg.adc_clip))
+        out[int(tpc)] = np.clip(out[int(tpc)] + delta, 0.0, clip_hi(cfg.adc_clip, int(tpc)))
         records.append(
             {
                 "TPCid": int(tpc),
@@ -1421,7 +1435,7 @@ def _try_light_repair_row(
             dest_t0 = int(dest["t0"])
             new_shift = _shift_image(proxy, dest_t0, nt=n_ticks)
             delta = new_shift - old_shift
-            trial_model_kept = np.clip(model_kept + delta[keep], 0.0, float(cfg.adc_clip))
+            trial_model_kept = np.clip(model_kept + delta[keep], 0.0, clip_hi(cfg.adc_clip, tpc, keep))
             after_loss = _weighted_loss(trial_model_kept, actual_kept, std_kept, tmask, cfg.overflow_weight)
             loss_improvement = before_loss - after_loss
 

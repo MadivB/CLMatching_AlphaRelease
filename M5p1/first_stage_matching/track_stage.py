@@ -14,7 +14,8 @@ configure_paths()
 
 from pulse_shapes import timeinterpolation
 from fast_unit_track_scan import unit_likelihood_curve_with_base_v1
-from v10_3_support import stack_cluster_fit_inputs_v10_3
+from v10_3_support import stack_cluster_fit_inputs_v10_3, stacked_fit_clip_bound_v10_3
+from light_saturation import clip_hi_full
 from v13_2_track_rescan import run_track_second_pass_rescan_v10_3
 from v10_7_focused_track_swap import (
     build_track_swap_candidates_from_hits_v10_7_focused,
@@ -237,8 +238,10 @@ def exact_likelihood_curve_with_base(
     error_metric: np.ndarray,
     *,
     search_range: int,
-    adc_clip: float,
+    adc_clip: float | np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray]:
+    # ``adc_clip``: legacy scalar, or the per-row (n_rows, 1) bound from
+    # ``stacked_fit_clip_bound_v10_3`` matching the stacked/selected rows of ``predicted``.
     pred = np.asarray(predicted, dtype=np.float32)
     base_ = np.asarray(base, dtype=np.float32)
     act = np.asarray(actual, dtype=np.float32)
@@ -252,7 +255,7 @@ def exact_likelihood_curve_with_base(
             shifted[:, int(t0) :] = pred[:, : -int(t0)]
         else:
             shifted[:] = pred
-        model = np.clip(shifted + base_, None, float(adc_clip))
+        model = np.clip(shifted + base_, None, adc_clip)
         errors[idx] = float(np.sum((model - act) ** 2 / err) / n_ticks)
     return shifts, errors
 
@@ -318,6 +321,9 @@ def run_track_shower_stage(
     verbose: bool = True,
 ) -> TrackStageResult:
     config = FirstStageConfig() if config is None else config
+    # v1.2.2: per-event per-channel saturation ceiling (n_tpc, n_ch) from the first stage;
+    # legacy scalar fallback when the cache carries none.  Every clip below goes through it.
+    adc_clip = (prediction.saturated_channel_cache or {}).get("ceiling", config.track_stage.adc_clip)
     t_total = time.perf_counter()
     t_leftover_prep = 0.0
     t_initial_loop = 0.0
@@ -473,7 +479,7 @@ def run_track_shower_stage(
                 fit_actual,
                 fit_std,
                 search_range=config.track_stage.search_range,
-                adc_clip=config.track_stage.adc_clip,
+                adc_clip=stacked_fit_clip_bound_v10_3(adc_clip, fit_support_meta),
             )
         else:
             raise ValueError("TrackStageConfig.scan_mode must be 'correlation', 'unit', 'fast_unit', or 'exact'.")
@@ -550,7 +556,7 @@ def run_track_shower_stage(
 
         shifted_full = timeinterpolation(full_image, shift=float(new_t0), baseline=0).astype(np.float32)
         base_image = image_updater(shifted_full, base_image, sorted_tpcs)
-        base_image = np.clip(base_image, None, config.track_stage.adc_clip)
+        base_image = np.clip(base_image, None, clip_hi_full(adc_clip))
         t_initial_apply += time.perf_counter() - t_apply_start
 
         if label_type == "track":
@@ -595,7 +601,7 @@ def run_track_shower_stage(
                 support_light_fraction=config.support.light_fraction,
                 support_max_gap=config.support.max_gap,
                 improvement_eps=config.track_stage.leftover_absorption_improvement_eps,
-                adc_clip=config.track_stage.adc_clip,
+                adc_clip=adc_clip,
                 saturated_channel_cache=prediction.saturated_channel_cache,
             )
             t_leftover_absorb += time.perf_counter() - t0_absorb
@@ -631,7 +637,7 @@ def run_track_shower_stage(
             cluster_full_scan_loss_dict=cluster_full_scan_loss_dict,
             absorbed_hit_parent=absorbed_hit_parent,
             search_range=config.track_stage.search_range,
-            adc_clip=config.track_stage.adc_clip,
+            adc_clip=adc_clip,
             t0_resolution=config.track_stage.t0_resolution,
             waveform_len=config.track_stage.waveform_len,
             collect_scan_losses=config.track_stage.collect_scan_losses,
@@ -719,7 +725,7 @@ def run_track_shower_stage(
                 min_t0_separation_ticks=config.track_stage.swap_min_t0_separation_ticks,
                 max_passes=config.track_stage.swap_max_passes,
                 improvement_eps=config.track_stage.swap_improvement_eps,
-                adc_clip=config.track_stage.adc_clip,
+                adc_clip=adc_clip,
                 search_range=config.track_stage.search_range,
                 lock_swapped_clusters=config.track_stage.swap_lock_swapped_clusters,
             )
@@ -761,7 +767,7 @@ def run_track_shower_stage(
             channel_support_cache=prediction.cluster_channel_support_cache,
             saturated_channel_cache=prediction.saturated_channel_cache,
             max_charge_tpc=max_charge_tpc,
-            adc_clip=config.track_stage.adc_clip,
+            adc_clip=adc_clip,
             grid_offsets=config.track_stage.fine_grid_offsets,
             improvement_eps=config.track_stage.fine_improvement_eps,
             verbose=False,

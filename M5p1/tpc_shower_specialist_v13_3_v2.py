@@ -25,6 +25,7 @@ from tpc_shower_specialist_v13_3 import (
     run_local_tpc_shower_specialist,
     timeinterpolation,
 )
+from light_saturation import clip_hi
 
 
 def _fragment_geometry_rows(result: dict, provisional_apex: np.ndarray) -> list[dict]:
@@ -60,7 +61,9 @@ def _scan_best_t0_for_block(
     std_block: np.ndarray,
     candidate_t0s: list[int],
     local_refine_radius_ticks: int = 5,
+    adc_clip=ADC_CLIP,
 ) -> tuple[int, dict[int, float]]:
+    # ``adc_clip``: legacy scalar or a bound already resolved for ``base_block``'s rows.
     scan_t0s = sorted(set(int(v) for v in candidate_t0s))
     best_t0 = int(scan_t0s[0])
     best_score = None
@@ -71,7 +74,7 @@ def _scan_best_t0_for_block(
             np.asarray(base_block, dtype=np.float32)
             + timeinterpolation(np.asarray(predicted_block, dtype=np.float32), shift=float(t0), baseline=0.0).astype(np.float32),
             None,
-            ADC_CLIP,
+            adc_clip,
         )
         return float(
             np.mean(
@@ -549,6 +552,7 @@ def _local_tpc_assignment_loss(
     event: dict,
     target_tpc: int,
     fragment_t0_by_id: dict[int, int],
+    adc_clip=ADC_CLIP,
 ) -> float:
     target_tpc = int(target_tpc)
     keep_idx = np.asarray(result["keep_channel_indices"], dtype=np.int32)
@@ -561,7 +565,7 @@ def _local_tpc_assignment_loss(
         label = int(result["fragment_label_by_id"][int(fragment_id)])
         block = np.asarray(result["image_maps"][(int(label), int(target_tpc))], dtype=np.float32)[keep_idx]
         model += timeinterpolation(block, shift=float(t0), baseline=0.0).astype(np.float32)
-    model = np.clip(model, None, ADC_CLIP)
+    model = np.clip(model, None, clip_hi(adc_clip, target_tpc, keep_idx))
     return float(np.mean((model - actual) ** 2 / np.maximum(std, 1e-6)))
 
 

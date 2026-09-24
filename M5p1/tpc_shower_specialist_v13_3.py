@@ -43,6 +43,7 @@ from v11_plotting_purpose_eval import (
     max_likelihood_curve_with_base,
 )
 from v13_2_track_rescan import _fit_track_t0_with_shower_guard_v13_2
+from light_saturation import clip_hi, clip_hi_full
 from v12_saturation_mask import build_saturated_channel_cache_v12
 
 
@@ -963,6 +964,13 @@ def _build_selected_prediction_inputs(
     )
 
 
+def _event_adc_clip(saturated_channel_cache: dict[str, Any] | None) -> Any:
+    """Per-event (n_tpc, n_ch) saturation ceiling from the v12 cache, else the legacy ADC_CLIP."""
+    if isinstance(saturated_channel_cache, dict) and saturated_channel_cache.get("ceiling") is not None:
+        return saturated_channel_cache["ceiling"]
+    return ADC_CLIP
+
+
 def _fit_track_base_on_selected_labels(
     *,
     track_labels: list[int],
@@ -982,6 +990,7 @@ def _fit_track_base_on_selected_labels(
     min_clean_t0_separation_ticks: int = 8,
     clean_worsen_tolerance_norm: float = 0.08,
 ) -> tuple[np.ndarray, dict[int, int], dict[int, list[int]]]:
+    adc_clip = _event_adc_clip(saturated_channel_cache)
     base_image = np.zeros_like(full_light_waveform, dtype=np.float32)
     track_t0_by_label: dict[int, int] = {}
     fit_channels_by_label: dict[int, list[int]] = {}
@@ -1029,7 +1038,7 @@ def _fit_track_base_on_selected_labels(
                 label_info=label_info_selected,
                 channel_support_cache=channel_support_cache,
                 search_range=895,
-                adc_clip=ADC_CLIP,
+                adc_clip=adc_clip,
                 t0_resolution=T0_RESOLUTION,
                 waveform_len=WVFM_LEN,
                 min_shower_energy_mev=float(min_shower_energy_mev),
@@ -1075,7 +1084,7 @@ def _fit_track_base_on_selected_labels(
             nchan = int(block.shape[0])
             base_image[int(tpcid)] += shifted[offset:offset + nchan]
             offset += nchan
-        base_image = np.clip(base_image, None, ADC_CLIP)
+        base_image = np.clip(base_image, None, clip_hi_full(adc_clip))
 
     return np.asarray(base_image, dtype=np.float32), track_t0_by_label, fit_channels_by_label
 
@@ -1160,12 +1169,13 @@ def _scan_fragment_losses_on_candidates(
     actual = np.asarray(fit_block["actual_block"], dtype=np.float32)
     std = np.asarray(fit_block["std_block"], dtype=np.float32)
     base = np.asarray(fit_block["base_block"], dtype=np.float32)
+    fit_clip = clip_hi(_event_adc_clip(saturated_channel_cache), int(target_tpc), fit_block["channel_indices"])
     scores: dict[int, float] = {}
     best_t0 = None
     best_score = None
     for t0 in candidate_t0s:
         shifted = timeinterpolation(pred, shift=float(t0), baseline=0.0).astype(np.float32)
-        model = np.clip(base + shifted, None, ADC_CLIP)
+        model = np.clip(base + shifted, None, fit_clip)
         score = float(np.mean((model - actual) ** 2 / np.maximum(std, 1e-6)))
         scores[int(t0)] = float(score)
         if best_score is None or score < best_score:
@@ -1322,10 +1332,12 @@ def _refine_family_t0s(
     keep_idx: np.ndarray,
     search_half_window: int = 8,
     n_iters: int = 2,
+    adc_clip: Any = ADC_CLIP,
 ) -> None:
     frag_map = {int(f.fragment_id): f for f in fragments}
     actual = np.asarray(full_light_waveform[int(target_tpc), keep_idx], dtype=np.float32)
     std = np.asarray(full_light_std[int(target_tpc), keep_idx], dtype=np.float32)
+    keep_clip = clip_hi(adc_clip, int(target_tpc), keep_idx)
 
     family_blocks: dict[int, np.ndarray] = {}
     for family_idx, family in enumerate(families):
@@ -1358,7 +1370,7 @@ def _refine_family_t0s(
                 model = np.clip(
                     other_base + timeinterpolation(family_blocks[int(family_idx)], shift=float(t0), baseline=0.0).astype(np.float32),
                     None,
-                    ADC_CLIP,
+                    keep_clip,
                 )
                 score = float(np.mean((model - actual) ** 2 / np.maximum(std, 1e-6)))
                 if best_score is None or score < best_score:
@@ -1377,12 +1389,14 @@ def _score_shifted_block(
     base: np.ndarray,
     actual: np.ndarray,
     std: np.ndarray,
+    adc_clip: Any = ADC_CLIP,
 ) -> float:
+    # ``adc_clip``: legacy scalar or a bound already resolved for ``base``'s rows.
     model = np.clip(
         np.asarray(base, dtype=np.float32)
         + timeinterpolation(np.asarray(block, dtype=np.float32), shift=float(t0), baseline=0.0).astype(np.float32),
         None,
-        ADC_CLIP,
+        adc_clip,
     )
     return float(np.mean((model - actual) ** 2 / np.maximum(std, 1e-6)))
 
@@ -1399,9 +1413,11 @@ def _peel_secondary_families_from_dominant(
     track_base_image: np.ndarray,
     keep_idx: np.ndarray,
     family_time_merge_ticks: int,
+    adc_clip: Any = ADC_CLIP,
 ) -> list[dict[str, Any]]:
     if len(families) == 0:
         return families
+    keep_clip = clip_hi(adc_clip, int(target_tpc), keep_idx)
 
     families = [dict(family) for family in families]
     dominant_idx = int(np.argmax([len(family["fragment_ids"]) for family in families]))
@@ -1423,7 +1439,7 @@ def _peel_secondary_families_from_dominant(
         np.asarray(track_base_image[int(target_tpc), keep_idx], dtype=np.float32)
         + timeinterpolation(family_blocks[int(dominant_idx)], shift=float(dominant_t0), baseline=0.0).astype(np.float32),
         None,
-        ADC_CLIP,
+        keep_clip,
     )
     residual_after_dominant = np.sum(np.clip(actual - dominant_model, 0.0, None), axis=0)
     secondary_t0s = [
@@ -1461,7 +1477,7 @@ def _peel_secondary_families_from_dominant(
             np.asarray(track_base_image[int(target_tpc), keep_idx], dtype=np.float32)
             + timeinterpolation(dominant_block - frag_block, shift=float(dominant_t0), baseline=0.0).astype(np.float32),
             None,
-            ADC_CLIP,
+            keep_clip,
         )
         stay_score = _score_shifted_block(
             block=frag_block,
@@ -1469,6 +1485,7 @@ def _peel_secondary_families_from_dominant(
             base=base_without_fragment,
             actual=actual,
             std=std,
+            adc_clip=keep_clip,
         )
         best_secondary_t0 = None
         best_secondary_score = None
@@ -1479,6 +1496,7 @@ def _peel_secondary_families_from_dominant(
                 base=base_without_fragment,
                 actual=actual,
                 std=std,
+                adc_clip=keep_clip,
             )
             if best_secondary_score is None or cand_score < best_secondary_score:
                 best_secondary_score = float(cand_score)
@@ -1550,6 +1568,7 @@ def run_local_tpc_shower_specialist(
     labels_global = np.asarray(labels_global, dtype=np.int32)
     truth_vertex_id = np.asarray(truth_vertex_id, dtype=np.int64)
     truth_t0 = np.asarray(truth_t0, dtype=np.float64)
+    adc_clip = _event_adc_clip(saturated_channel_cache)
 
     provisional_apex_debug: dict[str, Any] | None = None
     provisional_apex = None if provisional_apex_override is None else np.asarray(provisional_apex_override, dtype=np.float64)
@@ -1772,6 +1791,7 @@ def run_local_tpc_shower_specialist(
         full_light_std=full_light_std,
         track_base_image=track_base_image,
         keep_idx=keep_idx,
+        adc_clip=adc_clip,
     )
     families = _peel_secondary_families_from_dominant(
         families=families,
@@ -1784,6 +1804,7 @@ def run_local_tpc_shower_specialist(
         track_base_image=track_base_image,
         keep_idx=keep_idx,
         family_time_merge_ticks=int(family_time_merge_ticks),
+        adc_clip=adc_clip,
     )
     _refine_family_t0s(
         families=families,
@@ -1795,6 +1816,7 @@ def run_local_tpc_shower_specialist(
         full_light_std=full_light_std,
         track_base_image=track_base_image,
         keep_idx=keep_idx,
+        adc_clip=adc_clip,
     )
 
     hit_family = np.full(labels_global.shape[0], -1, dtype=np.int32)

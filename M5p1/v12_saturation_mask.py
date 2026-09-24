@@ -4,6 +4,11 @@ from typing import Any
 
 import numpy as np
 
+try:
+    from light_saturation import LEGACY_CLIP, VETO_MARGIN, legacy_ceiling
+except ImportError:  # pragma: no cover - package-relative import path
+    from .light_saturation import LEGACY_CLIP, VETO_MARGIN, legacy_ceiling  # type: ignore
+
 
 def _channel_label(channel_index: int) -> str:
     channel_index = int(channel_index)
@@ -15,7 +20,18 @@ def build_saturated_channel_cache_v12(
     *,
     clip_threshold: float = 60700.0,
     max_clip_ticks: int = 6,
+    ceiling: np.ndarray | None = None,
+    clipped: np.ndarray | None = None,
+    clip_margin: float = VETO_MARGIN,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Saturated-channel veto plus the per-channel saturation ceiling (v1.2.2).
+
+    A channel is vetoed when more than ``max_clip_ticks`` samples sit within ``clip_margin``
+    counts of its rail.  With ``ceiling`` (n_tpc, n_channels) = 2**15-1 minus the per-channel
+    dynamic baseline, the rail is the true one; without it the legacy absolute
+    ``clip_threshold`` (60700 = 60780 - 80) is used and the cache carries a constant ceiling.
+    The cache entry ``"ceiling"`` is what every later stage must clip its models to.
+    """
     wave = np.asarray(full_light_waveform, dtype=np.float32)
     if wave.ndim != 3:
         raise ValueError(
@@ -23,7 +39,17 @@ def build_saturated_channel_cache_v12(
             f"got {wave.shape!r}"
         )
 
-    clip_counts = np.sum(wave > float(clip_threshold), axis=-1, dtype=np.int32)
+    if ceiling is not None:
+        ceil = np.asarray(ceiling, dtype=np.float32)
+        if ceil.shape != wave.shape[:2]:
+            raise ValueError(f"ceiling shape {ceil.shape!r} does not match waveform {wave.shape[:2]!r}")
+        thr = ceil - np.float32(clip_margin)
+        clip_counts = np.sum(wave > thr[..., None], axis=-1, dtype=np.int32)
+        ceiling_source = "rail_minus_baseline"
+    else:
+        ceil = legacy_ceiling(wave.shape[:2])
+        clip_counts = np.sum(wave > float(clip_threshold), axis=-1, dtype=np.int32)
+        ceiling_source = "legacy_constant"
     veto_mask = np.asarray(clip_counts > int(max_clip_ticks), dtype=bool)
     allowed_channel_indices_by_tpc = [
         np.flatnonzero(~veto_mask[int(tpcid)]).astype(np.int32)
@@ -33,6 +59,10 @@ def build_saturated_channel_cache_v12(
     per_tpc_veto_counts = np.sum(veto_mask, axis=1, dtype=np.int32)
     summary = {
         "clip_threshold": float(clip_threshold),
+        "clip_margin": float(clip_margin),
+        "ceiling_source": ceiling_source,
+        "ceiling_min": float(ceil.min()) if ceil.size else float(LEGACY_CLIP),
+        "ceiling_max": float(ceil.max()) if ceil.size else float(LEGACY_CLIP),
         "max_clip_ticks": int(max_clip_ticks),
         "n_tpcs": int(wave.shape[0]),
         "n_channels_per_tpc": int(wave.shape[1]),
@@ -49,10 +79,14 @@ def build_saturated_channel_cache_v12(
     }
     cache = {
         "clip_threshold": float(clip_threshold),
+        "clip_margin": float(clip_margin),
         "max_clip_ticks": int(max_clip_ticks),
         "clip_counts": clip_counts.astype(np.int32),
         "veto_mask": veto_mask,
         "allowed_channel_indices_by_tpc": allowed_channel_indices_by_tpc,
+        "ceiling": ceil,
+        "ceiling_source": ceiling_source,
+        "clipped": None if clipped is None else np.asarray(clipped, dtype=bool),
     }
     return cache, summary
 

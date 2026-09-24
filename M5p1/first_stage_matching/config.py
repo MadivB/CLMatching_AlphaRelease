@@ -192,7 +192,8 @@ class ClusteringConfig:
 class SupportConfig:
     light_fraction: float = 0.90
     max_gap: int = 2
-    saturation_clip_threshold: float = 60700.0
+    saturation_clip_threshold: float = 60700.0   # legacy absolute threshold (no ceiling available)
+    saturation_clip_margin: float = 80.0         # v1.2.2: samples within this of the per-channel rail count as clipped
     saturation_max_clip_ticks: int = 6
 
 

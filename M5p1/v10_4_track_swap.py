@@ -6,8 +6,10 @@ import numpy as np
 
 try:
     from v3_2_global_matching import _shift_block, append_candidate_t0, compute_error_metric
+    from light_saturation import clip_hi
 except ModuleNotFoundError:  # pragma: no cover - notebook import fallback
     from M5p1.v3_2_global_matching import _shift_block, append_candidate_t0, compute_error_metric
+    from M5p1.light_saturation import clip_hi
 
 
 def _cluster_image_tpcs(
@@ -172,7 +174,7 @@ def _score_track_swap_pair(
     base_image: np.ndarray,
     full_light_waveform: np.ndarray,
     full_light_std: np.ndarray,
-    adc_clip: float,
+    adc_clip: float | np.ndarray,
 ) -> tuple[float, float, dict[int, int]]:
     current_score = 0.0
     swapped_score = 0.0
@@ -187,6 +189,7 @@ def _score_track_swap_pair(
             channel_support_cache=channel_support_cache,
         )
         fit_channels_by_tpc[int(tpcid)] = int(channel_indices.size)
+        swap_clip = clip_hi(adc_clip, int(tpcid), channel_indices)
 
         current_block = np.asarray(base_image[int(tpcid), channel_indices], dtype=np.float32)
         actual_block = np.asarray(full_light_waveform[int(tpcid), channel_indices], dtype=np.float32)
@@ -216,14 +219,14 @@ def _score_track_swap_pair(
             swapped_block = np.clip(
                 swapped_block + _shift_block(wave_a[None, channel_indices, :], int(t0_b))[0],
                 None,
-                float(adc_clip),
+                swap_clip,
             )
         if (int(cluster_b), int(tpcid)) in image_maps:
             wave_b = np.asarray(image_maps[(int(cluster_b), int(tpcid))], dtype=np.float32)
             swapped_block = np.clip(
                 swapped_block + _shift_block(wave_b[None, channel_indices, :], int(t0_a))[0],
                 None,
-                float(adc_clip),
+                swap_clip,
             )
 
         swapped_score += float(compute_error_metric(swapped_block, actual_block, error_block))
@@ -246,7 +249,7 @@ def _apply_track_swap_pair(
     protected_track_shower_timestamps: np.ndarray | None,
     t0_candidates: list[list[int]],
     assignment_info: dict[tuple[int, int], dict[str, Any]],
-    adc_clip: float,
+    adc_clip: float | np.ndarray,
     improvement: float,
     absorbed_hit_parent: np.ndarray | None,
     trigger_pair_rank: int,
@@ -254,6 +257,7 @@ def _apply_track_swap_pair(
 ) -> None:
     for tpcid in union_tpcs:
         rebuilt_block = np.asarray(base_image[int(tpcid)], dtype=np.float32).copy()
+        tpc_clip = clip_hi(adc_clip, int(tpcid))
         if (int(cluster_a), int(tpcid)) in image_maps:
             wave_a = np.asarray(image_maps[(int(cluster_a), int(tpcid))], dtype=np.float32)
             rebuilt_block = np.clip(
@@ -273,14 +277,14 @@ def _apply_track_swap_pair(
             rebuilt_block = np.clip(
                 rebuilt_block + _shift_block(wave_a[None, :, :], int(t0_b))[0],
                 None,
-                float(adc_clip),
+                tpc_clip,
             )
         if (int(cluster_b), int(tpcid)) in image_maps:
             wave_b = np.asarray(image_maps[(int(cluster_b), int(tpcid))], dtype=np.float32)
             rebuilt_block = np.clip(
                 rebuilt_block + _shift_block(wave_b[None, :, :], int(t0_a))[0],
                 None,
-                float(adc_clip),
+                tpc_clip,
             )
         base_image[int(tpcid)] = rebuilt_block
 
@@ -356,7 +360,7 @@ def run_track_swap_rescue_v10_4(
     min_t0_separation_ticks: int = 8,
     max_passes: int = 6,
     improvement_eps: float = 0.0,
-    adc_clip: float = 60780.0,
+    adc_clip: float | np.ndarray = 60780.0,
     search_range: int = 895,
 ) -> tuple[
     np.ndarray,
@@ -477,7 +481,7 @@ def run_track_swap_rescue_v10_4(
                     base_image=base_image,
                     full_light_waveform=full_light_waveform,
                     full_light_std=full_light_std,
-                    adc_clip=float(adc_clip),
+                    adc_clip=adc_clip,
                 )
                 improvement = float(current_score - swapped_score)
                 n_pairs_considered += 1
@@ -543,7 +547,7 @@ def run_track_swap_rescue_v10_4(
             protected_track_shower_timestamps=protected_track_shower_timestamps,
             t0_candidates=t0_candidates,
             assignment_info=assignment_info,
-            adc_clip=float(adc_clip),
+            adc_clip=adc_clip,
             improvement=float(best_swap["improvement"]),
             absorbed_hit_parent=absorbed_hit_parent,
             trigger_pair_rank=int(pass_idx),

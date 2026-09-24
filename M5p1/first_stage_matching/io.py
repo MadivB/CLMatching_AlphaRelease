@@ -12,6 +12,7 @@ configure_paths()
 
 from lut import LUT
 from ML_NDfull_perceiver import DEFAULT_TPC_YAML, NUM_TARGETS, light_tpc_to_charge_tpc, load_tpc_geometries
+from light_saturation import format_light_event
 
 
 @dataclass(slots=True)
@@ -28,6 +29,11 @@ class EventData:
     hit_tpc_id: np.ndarray
     full_light_waveform: np.ndarray
     geom_map: dict[int, Any]
+    # v1.2.2: per-channel saturation ceiling in baseline-subtracted units
+    # (ADC rail 2**15-1 minus the dynamic baseline), (n_tpc, n_channels); and the FLOW
+    # "clipped" flag mapped to the same order.
+    sat_ceiling: np.ndarray | None = None
+    light_clipped: np.ndarray | None = None
 
 
 _LIGHT_CHANNEL_ORDER_CACHE: dict[str, tuple[dict[int, list[tuple[int, int]]], int]] = {}
@@ -120,6 +126,36 @@ def _event_hit_refs(h5: h5py.File, event_id: int, hits_dataset: str) -> np.ndarr
     return np.asarray(refs[refs[:, 0] == int(event_id), 1], dtype=np.int64)
 
 
+def format_light_event_arrays(
+    h5: h5py.File,
+    light_id: int,
+    *,
+    n_channels: int = NUM_TARGETS,
+    waveform_len: int = 1000,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Format one light event into charge-TPC indexing.
+
+    Returns (formatted (n_charge_tpc, 120, 1000), sat_ceiling (n_charge_tpc, 120),
+    clipped (n_charge_tpc, 120)).  The waveform is baseline-subtracted (mean of the first
+    75 samples); the ceiling is the int16 rail (2**15 - 1) minus that same baseline, i.e. the
+    value at which the actual waveform flattens in these units (v1.2.2).
+    """
+    tpc_to_channels, n_light_tpc = build_light_channel_order(h5)
+    dset = h5["light/wvfm/data"]
+    row = dset[int(light_id)]
+    samples = np.asarray(row["samples"])
+    clipped_row = np.asarray(row["clipped"], dtype=bool) if "clipped" in dset.dtype.names else None
+    return format_light_event(
+        samples,
+        tpc_to_channels,
+        n_light_tpc,
+        light_tpc_to_charge_tpc,
+        n_channels=int(n_channels),
+        waveform_len=int(waveform_len),
+        clipped_event=clipped_row,
+    )
+
+
 def format_light_waveform_for_event(
     h5: h5py.File,
     light_id: int,
@@ -128,20 +164,9 @@ def format_light_waveform_for_event(
     waveform_len: int = 1000,
 ) -> np.ndarray:
     """Format one light event into charge-TPC indexing: (n_charge_tpc, 120, 1000)."""
-    tpc_to_channels, n_light_tpc = build_light_channel_order(h5)
-    samples = h5["light/wvfm/data"]["samples"][int(light_id)]
-    baseline = np.mean(samples[..., :75], axis=-1, keepdims=True)
-    samples_bl = (samples - baseline).astype(np.float32)
-
-    formatted = np.zeros((n_light_tpc, int(n_channels), int(waveform_len)), dtype=np.float32)
-    for light_tpc in range(n_light_tpc):
-        channels = tpc_to_channels.get(int(light_tpc), [])
-        if len(channels) != int(n_channels):
-            continue
-        charge_tpc = int(light_tpc_to_charge_tpc(int(light_tpc)))
-        adc_idx = np.asarray([item[0] for item in channels], dtype=np.intp)
-        ch_idx = np.asarray([item[1] for item in channels], dtype=np.intp)
-        formatted[charge_tpc] = samples_bl[adc_idx, ch_idx, : int(waveform_len)]
+    formatted, _ceiling, _clipped = format_light_event_arrays(
+        h5, int(light_id), n_channels=int(n_channels), waveform_len=int(waveform_len)
+    )
     return formatted
 
 
@@ -193,7 +218,7 @@ def load_event(
     if len(light_refs) == 0:
         raise RuntimeError(f"No light event found for charge event {int(event_id)}")
     light_id = int(light_refs[0, 1])
-    full_light_waveform = format_light_waveform_for_event(h5, light_id)
+    full_light_waveform, sat_ceiling, light_clipped = format_light_event_arrays(h5, light_id)
 
     return EventData(
         h5=h5,
@@ -208,6 +233,8 @@ def load_event(
         hit_tpc_id=hit_tpc_id,
         full_light_waveform=full_light_waveform,
         geom_map=geom_map,
+        sat_ceiling=sat_ceiling,
+        light_clipped=light_clipped,
     )
 
 
@@ -216,6 +243,7 @@ __all__ = [
     "open_flow_file",
     "build_sipm_lut",
     "build_light_channel_order",
+    "format_light_event_arrays",
     "format_light_waveform_for_event",
     "charge_tpc_from_io_group",
     "assign_hits_to_charge_tpc",

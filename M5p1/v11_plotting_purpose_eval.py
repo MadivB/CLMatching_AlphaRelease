@@ -44,6 +44,8 @@ from ML_NDfull_perceiver import (
 # Keep the Python pipeline aligned with the current v11_2 notebook clustering
 # configuration rather than the older toolbox defaults.
 from global_track_clustering_toolbox_v11_2 import build_global_labels_toolbox
+# v1.2.2: per-channel light saturation ceiling (int16 rail minus the dynamic baseline)
+from light_saturation import clip_hi_full, format_light_event, stacked_row_ceiling
 
 
 N_TPCS = 70
@@ -108,7 +110,14 @@ def _build_sipm_lut(h5: h5py.File) -> tuple[dict[tuple[int, int, int], tuple[int
     return lut, nadc
 
 
-def get_formatted_light_waveforms(h5: h5py.File) -> np.ndarray:
+_LIGHT_ORDER_CACHE: dict[str, tuple[dict[int, list[tuple[int, int]]], int]] = {}
+
+
+def _light_channel_order(h5: h5py.File) -> tuple[dict[int, list[tuple[int, int]]], int]:
+    """(light tpc -> [(adc, ch)] in the chain's channel order, n_light_tpc); cached per file."""
+    key = str(getattr(h5, "filename", ""))
+    if key and key in _LIGHT_ORDER_CACHE:
+        return _LIGHT_ORDER_CACHE[key]
     lut, _ = _build_sipm_lut(h5)
     ntpc = max(t for (t, _, _) in lut) + 1
 
@@ -123,6 +132,24 @@ def get_formatted_light_waveforms(h5: h5py.File) -> np.ndarray:
             key=lambda item: item[0],
         )
         tpc_to_channels[ltpc] = [(adc, ch) for (_, adc, ch) in (side0 + side1)]
+    if key:
+        _LIGHT_ORDER_CACHE[key] = (tpc_to_channels, ntpc)
+    return tpc_to_channels, ntpc
+
+
+def get_event_light_ceiling(h5: h5py.File, light_id: int) -> np.ndarray:
+    """Per-channel saturation ceiling (n_charge_tpc, 120) for one light event: the int16 rail
+    (2**15-1) minus the same 75-sample baseline that get_formatted_light_waveforms subtracts."""
+    tpc_to_channels, ntpc = _light_channel_order(h5)
+    samples = np.asarray(h5["light/wvfm/data"]["samples"][int(light_id)])
+    _formatted, ceiling, _clipped = format_light_event(
+        samples, tpc_to_channels, ntpc, light_tpc_to_charge_tpc, n_channels=N_CHANNELS, waveform_len=WVFM_LEN
+    )
+    return ceiling
+
+
+def get_formatted_light_waveforms(h5: h5py.File) -> np.ndarray:
+    tpc_to_channels, ntpc = _light_channel_order(h5)
 
     light_wvfms = h5["light/wvfm/data"]["samples"][:]
     baseline = np.mean(light_wvfms[..., :75], axis=-1, keepdims=True)
@@ -201,7 +228,9 @@ def max_likelihood_curve_with_base(
     actual: np.ndarray,
     error_metric: np.ndarray,
     search_range: int = 895,
+    adc_clip: float | np.ndarray = ADC_CLIP,
 ) -> tuple[np.ndarray, np.ndarray]:
+    """``adc_clip``: scalar or a per-row (n_rows, 1) ceiling matching the stacked rows."""
     pred = np.asarray(predicted, dtype=np.float32)
     base_ = np.asarray(base, dtype=np.float32)
     act = np.asarray(actual, dtype=np.float32)
@@ -217,7 +246,7 @@ def max_likelihood_curve_with_base(
             shifted[:, int(t0):] = pred[:, :-int(t0)]
         else:
             shifted[:] = pred
-        model = np.clip(shifted + base_, None, ADC_CLIP)
+        model = np.clip(shifted + base_, None, adc_clip)
         errors[idx] = np.sum((model - act) ** 2 / err) / float(n_ticks)
 
     return shifts, errors
@@ -284,8 +313,10 @@ def _load_event_inputs(resources: V11PlottingResources, ev_id: int) -> dict[str,
     light_id = int(light_refs[0, 1])
     full_light_waveform = np.asarray(resources.all_formatted_wvfms[light_id], dtype=np.float32).copy()
     full_light_std = np.ones_like(full_light_waveform, dtype=np.float32)
+    sat_ceiling = get_event_light_ceiling(resources.h5, light_id)   # v1.2.2
 
     return {
+        "satCeiling": sat_ceiling,
         "ev_id": int(ev_id),
         "hit_refs": hit_refs,
         "hits_evt": hits_evt,
@@ -319,9 +350,12 @@ def _run_phase1_track_shower(
     cluster_to_tpcs: dict[int, list[int]],
     cluster_channel_support_cache: dict[tuple[int, int], dict[str, Any]] | None,
     verbose: bool = True,
+    sat_ceiling: np.ndarray | None = None,
 ) -> dict[str, Any]:
     nhits = int(xset.shape[0])
     max_charge_tpc = int(fullLightWaveform.shape[0])
+    # v1.2.2: per-channel rail when the event supplies it, else the legacy constant
+    adc_clip = ADC_CLIP if sat_ceiling is None else np.asarray(sat_ceiling, dtype=np.float32)
 
     track_shower_labels = list(range(int(split_index)))
     cluster_labels = sorted(int(v) for v in np.unique(labels_global) if int(v) >= int(split_index))
@@ -421,6 +455,7 @@ def _run_phase1_track_shower(
             actual=tpc_actual_fit,
             error_metric=tpc_std_fit,
             search_range=895,
+            adc_clip=stacked_row_ceiling(adc_clip, fit_support_meta),
         )
         raw_t0 = int(shifts[int(np.argmin(errors))])
         newt0 = int(raw_t0)
@@ -459,7 +494,7 @@ def _run_phase1_track_shower(
 
         new_image = timeinterpolation(tpc_image_full, shift=float(newt0), baseline=0).astype(np.float32)
         baseImage = image_updater(new_image, baseImage, sorted_tpcs)
-        baseImage = np.clip(baseImage, None, ADC_CLIP)
+        baseImage = np.clip(baseImage, None, clip_hi_full(adc_clip))
 
         if v8_leftover_state is not None:
             try_absorb_leftovers_for_parent_v8(
@@ -490,7 +525,7 @@ def _run_phase1_track_shower(
                 support_light_fraction=0.90,
                 support_max_gap=2,
                 improvement_eps=0.0,
-                adc_clip=ADC_CLIP,
+                adc_clip=adc_clip,
             )
 
     if verbose:
@@ -520,7 +555,7 @@ def _run_phase1_track_shower(
         cluster_full_scan_loss_dict=cluster_full_scan_loss_dict,
         absorbed_hit_parent=v8_absorbed_hit_parent,
         search_range=895,
-        adc_clip=ADC_CLIP,
+        adc_clip=adc_clip,
         t0_resolution=T0_RESOLUTION,
         waveform_len=WVFM_LEN,
         collect_scan_losses=False,
@@ -592,7 +627,7 @@ def _run_phase1_track_shower(
         min_t0_separation_ticks=8,
         max_passes=8,
         improvement_eps=0.0,
-        adc_clip=ADC_CLIP,
+        adc_clip=adc_clip,
         search_range=895,
         lock_swapped_clusters=True,
     )
@@ -647,6 +682,8 @@ def run_v11_pipeline_for_event(
     fullLightWaveform = event["fullLightWaveform"]
     fullLightStd = event["fullLightStd"]
     hit_refs = event["hit_refs"]
+    sat_ceiling = event.get("satCeiling")          # v1.2.2 per-channel rail
+    adc_clip = ADC_CLIP if sat_ceiling is None else np.asarray(sat_ceiling, dtype=np.float32)
 
     if verbose:
         print(f"Running clustering for event {int(ev_id)} on {len(xset)} hits ...")
@@ -740,6 +777,7 @@ def run_v11_pipeline_for_event(
         cluster_to_tpcs=cluster_to_tpcs,
         cluster_channel_support_cache=cluster_channel_support_cache,
         verbose=verbose,
+        sat_ceiling=sat_ceiling,
     )
 
     backbone_snapshot = snapshot_backbone_hits_v11(
@@ -795,7 +833,7 @@ def run_v11_pipeline_for_event(
         large_cluster_energy_mev=50.0,
         minimum_iterative_energy_mev=0.5,
         search_range=895,
-        adc_clip=ADC_CLIP,
+        adc_clip=adc_clip,
         collect_scan_losses=False,
         assignment_improvement_eps=0.0,
         flash_seed_t0s_by_tpc=flash_seed_t0s_by_tpc,
@@ -838,7 +876,7 @@ def run_v11_pipeline_for_event(
         positive_row_margin=-1e-4,
         matrix_worsen_tolerance_norm=0.15,
         search_range=895,
-        adc_clip=ADC_CLIP,
+        adc_clip=adc_clip,
         collect_scan_losses=False,
         full_scan_assign_eps=-1.0,
         backward_peak_align_ticks=5,

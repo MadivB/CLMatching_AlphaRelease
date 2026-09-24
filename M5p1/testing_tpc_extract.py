@@ -10,6 +10,11 @@ try:
 except Exception:
     from truth_plotting import extract_truth_for_selected_hits
 
+try:
+    from .light_saturation import saturated_mask as _saturated_mask_from_ceiling
+except Exception:
+    from light_saturation import saturated_mask as _saturated_mask_from_ceiling
+
 TRUTH_T0_CONVENTION = "(segment_t0_us * 1000 - event_start_ns) / 16"
 
 
@@ -298,7 +303,11 @@ def extract_tpc_testing_info(
     if isinstance(saturated_channel_cache, dict) and "veto_mask" in saturated_channel_cache:
         saturated_mask = _as_array(saturated_channel_cache["veto_mask"][tpcid], bool)
     else:
-        saturated_mask = np.sum(actual[tpcid] > 60700.0, axis=1) > 6
+        ceiling_tpc = None
+        if isinstance(saturated_channel_cache, dict) and saturated_channel_cache.get("ceiling") is not None:
+            ceiling_tpc = np.asarray(saturated_channel_cache["ceiling"], dtype=np.float32)[tpcid]
+        # None -> legacy ``actual > 60700`` rule; per-channel ceiling -> ``actual > ceiling - 80``
+        saturated_mask = _saturated_mask_from_ceiling(actual[tpcid], ceiling_tpc)
 
     labels_tpc = labels_global[loc]
     unique_labels = np.unique(labels_tpc)

@@ -15,6 +15,7 @@ try:
     from v4_hierarchical_matching import rebalance_step4_clusters_v4
     from v8_iterative_matching import _full_scan_primary_clusters, _iterative_band_matrix_assign_tpc
     from v8_1_flash_seeding import merge_flash_t0_candidates_after_primary
+    from light_saturation import clip_hi
 except ModuleNotFoundError:  # pragma: no cover - notebook import fallback
     from M5p1.v3_2_global_matching import (
         _build_scan_loss_entry,
@@ -26,6 +27,7 @@ except ModuleNotFoundError:  # pragma: no cover - notebook import fallback
     from M5p1.v4_hierarchical_matching import rebalance_step4_clusters_v4
     from M5p1.v8_iterative_matching import _full_scan_primary_clusters, _iterative_band_matrix_assign_tpc
     from M5p1.v8_1_flash_seeding import merge_flash_t0_candidates_after_primary
+    from M5p1.light_saturation import clip_hi
 
 
 def _cluster_image_tpcs(
@@ -108,13 +110,14 @@ def _score_primary_swap_pair(
     base_image: np.ndarray,
     full_light_waveform: np.ndarray,
     full_light_std: np.ndarray,
-    adc_clip: float,
+    adc_clip: float | np.ndarray,
 ) -> tuple[float, float]:
     current_score = 0.0
     swapped_score = 0.0
 
     for tpcid in union_tpcs:
         current_block = np.asarray(base_image[int(tpcid)], dtype=np.float32)
+        tpc_clip = clip_hi(adc_clip, int(tpcid))
         actual_block = np.asarray(full_light_waveform[int(tpcid)], dtype=np.float32)
         error_block = np.asarray(full_light_std[int(tpcid)], dtype=np.float32)
 
@@ -142,14 +145,14 @@ def _score_primary_swap_pair(
             swapped_block = np.clip(
                 swapped_block + _shift_block(wave_a[None, :, :], int(t0_b))[0],
                 None,
-                float(adc_clip),
+                tpc_clip,
             )
         if (int(cluster_b), int(tpcid)) in image_maps:
             wave_b = np.asarray(image_maps[(int(cluster_b), int(tpcid))], dtype=np.float32)
             swapped_block = np.clip(
                 swapped_block + _shift_block(wave_b[None, :, :], int(t0_a))[0],
                 None,
-                float(adc_clip),
+                tpc_clip,
             )
 
         swapped_score += float(compute_error_metric(swapped_block, actual_block, error_block))
@@ -172,13 +175,14 @@ def _apply_primary_swap_pair(
     protected_track_shower_timestamps: np.ndarray | None,
     t0_candidates: list[list[int]],
     assignment_info: dict[tuple[int, int], dict[str, Any]],
-    adc_clip: float,
+    adc_clip: float | np.ndarray,
     improvement: float,
     trigger_tpcid: int,
     search_range: int,
 ) -> None:
     for tpcid in union_tpcs:
         rebuilt_block = np.asarray(base_image[int(tpcid)], dtype=np.float32).copy()
+        tpc_clip = clip_hi(adc_clip, int(tpcid))
         if (int(cluster_a), int(tpcid)) in image_maps:
             wave_a = np.asarray(image_maps[(int(cluster_a), int(tpcid))], dtype=np.float32)
             rebuilt_block = np.clip(
@@ -198,14 +202,14 @@ def _apply_primary_swap_pair(
             rebuilt_block = np.clip(
                 rebuilt_block + _shift_block(wave_a[None, :, :], int(t0_b))[0],
                 None,
-                float(adc_clip),
+                tpc_clip,
             )
         if (int(cluster_b), int(tpcid)) in image_maps:
             wave_b = np.asarray(image_maps[(int(cluster_b), int(tpcid))], dtype=np.float32)
             rebuilt_block = np.clip(
                 rebuilt_block + _shift_block(wave_b[None, :, :], int(t0_a))[0],
                 None,
-                float(adc_clip),
+                tpc_clip,
             )
         base_image[int(tpcid)] = rebuilt_block
 
@@ -260,7 +264,7 @@ def _run_primary_t0_swap_stage(
     assignment_info: dict[tuple[int, int], dict[str, Any]],
     cluster_energies: dict[int, float],
     large_cluster_energy_mev: float,
-    adc_clip: float,
+    adc_clip: float | np.ndarray,
     search_range: int,
     energy_similarity_fraction: float,
     max_passes_per_tpc: int,
@@ -357,7 +361,7 @@ def _run_primary_t0_swap_stage(
                         base_image=base_image,
                         full_light_waveform=full_light_waveform,
                         full_light_std=full_light_std,
-                        adc_clip=float(adc_clip),
+                        adc_clip=adc_clip,
                     )
                     considered_here += 1
                     total_pairs_considered += 1
@@ -400,7 +404,7 @@ def _run_primary_t0_swap_stage(
                 protected_track_shower_timestamps=protected_track_shower_timestamps,
                 t0_candidates=t0_candidates,
                 assignment_info=assignment_info,
-                adc_clip=float(adc_clip),
+                adc_clip=adc_clip,
                 improvement=float(best_swap["improvement"]),
                 trigger_tpcid=int(tpcid),
                 search_range=int(search_range),
@@ -453,7 +457,7 @@ def assign_small_clusters_v8_intermediate_test(
     matrix_worsen_tolerance_norm: float = 0.15,
     full_scan_assign_eps: float = 0.0,
     search_range: int = 895,
-    adc_clip: float = 60780.0,
+    adc_clip: float | np.ndarray = 60780.0,
     collect_scan_losses: bool = False,
     assignment_improvement_eps: float = 0.0,
     backward_peak_align_ticks: int = 5,
@@ -555,7 +559,7 @@ def assign_small_clusters_v8_intermediate_test(
         unassigned_by_tpc=unassigned_by_tpc,
         cluster_energies=cluster_energies,
         search_range=int(search_range),
-        adc_clip=float(adc_clip),
+        adc_clip=adc_clip,
         collect_scan_losses=collect_scan_losses,
         assignment_improvement_eps=float(assignment_improvement_eps),
         stage_name="primary_full_scan",
@@ -589,7 +593,7 @@ def assign_small_clusters_v8_intermediate_test(
             assignment_info=assignment_info,
             cluster_energies=cluster_energies,
             large_cluster_energy_mev=float(large_cluster_energy_mev),
-            adc_clip=float(adc_clip),
+            adc_clip=adc_clip,
             search_range=int(search_range),
             energy_similarity_fraction=float(primary_swap_energy_fraction),
             max_passes_per_tpc=int(primary_swap_max_passes_per_tpc),
@@ -636,7 +640,7 @@ def assign_small_clusters_v8_intermediate_test(
             positive_row_margin=float(positive_row_margin),
             matrix_worsen_tolerance_norm=float(matrix_worsen_tolerance_norm),
             search_range=int(search_range),
-            adc_clip=float(adc_clip),
+            adc_clip=adc_clip,
             collect_scan_losses=collect_scan_losses,
             full_scan_assign_eps=float(full_scan_assign_eps),
             backward_peak_align_ticks=int(backward_peak_align_ticks),
