@@ -264,6 +264,7 @@ def process_clusters_to_imageMaps_streaming(
     amp_dtype: str = "bf16",
     store_dense_meta: bool = False,
     restrict_clusters: set[int] | None = None,
+    amplitudes_only: bool = False,
 ) -> tuple[dict[tuple[int, int], np.ndarray], dict[str, Any]]:
     """
     Streaming equivalent of process_clusters_to_imageMaps.
@@ -275,6 +276,10 @@ def process_clusters_to_imageMaps_streaming(
     ``restrict_clusters``: when given, only these labels are grouped and
     predicted; all other clusters produce no (cluster, tpc) image entries.
     None = predict every cluster (default).
+    ``amplitudes_only``: skip materialising the (120, wave_len) image maps
+    (returns {} as the first value); the per-channel amplitudes are in
+    meta["amplitudes"] indexed by meta["group_cls"] / meta["group_tpcs"].
+    Used by stages that only need the amplitude pattern (ND stage 4.85).
     """
     t_total = time.perf_counter()
     t0 = time.perf_counter()
@@ -359,6 +364,9 @@ def process_clusters_to_imageMaps_streaming(
 
         t0 = time.perf_counter()
         amplitudes[start:stop] = batch_amps
+        if amplitudes_only and not store_dense_meta:
+            materialize_s += time.perf_counter() - t0
+            continue
         batch_wave = batch_amps[:, :, None] * tmpl[None, None, :]
         for local, group_id in enumerate(range(start, stop)):
             image_maps[(int(grouped.group_cls[group_id]), int(grouped.group_tpcs[group_id]))] = np.asarray(
