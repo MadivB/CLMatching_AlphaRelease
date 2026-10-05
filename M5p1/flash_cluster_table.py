@@ -30,7 +30,7 @@ def _nearest_tick(value: Any) -> int:
     return int(np.floor(float(value) + 0.5))
 
 
-def _sort_pairs(values: Iterable[Any], flags: Iterable[Any], *, max_t0: float | None = None) -> tuple[list[float], list[bool]]:
+def _sort_pairs_py(values: Iterable[Any], flags: Iterable[Any], *, max_t0: float | None = None) -> tuple[list[float], list[bool]]:
     pairs = []
     for value, flag in zip(values, flags):
         if _is_valid_t0(value, max_t0=max_t0):
@@ -39,13 +39,44 @@ def _sort_pairs(values: Iterable[Any], flags: Iterable[Any], *, max_t0: float | 
     return [float(v) for v, _ in pairs], [bool(f) for _, f in pairs]
 
 
+def _sort_pairs(values: Iterable[Any], flags: Iterable[Any], *, max_t0: float | None = None) -> tuple[list[float], list[bool]]:
+    """Vectorised version of _sort_pairs_py (speed campaign 2026-10-05; this ran ~1e6 scalar calls per spill):
+    same validity test, clipping, integer snapping and stable sort."""
+    vals = list(values); fl = list(flags)
+    n = min(len(vals), len(fl))
+    if n == 0:
+        return [], []
+    try:
+        v = np.asarray(vals[:n], dtype=np.float64)
+    except Exception:
+        return _sort_pairs_py(vals, fl, max_t0=max_t0)
+    ok = np.isfinite(v)
+    ok &= np.where(ok, np.round(np.where(ok, v, 0.0)) != 0, False)
+    if max_t0 is not None:
+        ok &= (v >= 0.0) & (v <= float(max_t0))
+    if not ok.any():
+        return [], []
+    v = v[ok]; f = np.asarray([bool(x) for x in fl[:n]], dtype=bool)[ok]
+    if max_t0 is not None:
+        v = np.clip(v, 0.0, float(max_t0))
+    r = np.round(v); snap = np.abs(v - r) < 1e-6; v = np.where(snap, r, v)
+    o = np.argsort(v, kind="stable")
+    return [float(x) for x in v[o]], [bool(x) for x in f[o]]
+
+
+_CLEAN_CACHE: dict = {}      # (id(t0_candidates), tpc) -> (values tuple, raw flags tuple, max_t0, cleaned values, cleaned flags)
+
+
 def ensure_flash_cluster_flags(
     t0_candidates: list[list[Any]],
     flash_cluster_received_by_tpc: list[list[Any]] | None = None,
     *,
     max_t0: float | None = None,
 ) -> list[list[bool]]:
+    # speed campaign 2026-10-05: this is called after every assignment and used to re-clean all 70 TPC lists in pure
+    # Python (~1e6 scalar calls per spill); a TPC whose (values, flags) are unchanged since its last cleaning is reused.
     flags: list[list[bool]] = []
+    base = id(t0_candidates)
     for tpc, values in enumerate(t0_candidates):
         if flash_cluster_received_by_tpc is None or int(tpc) >= len(flash_cluster_received_by_tpc):
             raw_flags = [False] * len(values)
@@ -55,7 +86,21 @@ def ensure_flash_cluster_flags(
                 raw_flags.extend([False] * (len(values) - len(raw_flags)))
             elif len(raw_flags) > len(values):
                 raw_flags = raw_flags[: len(values)]
-        cleaned_values, cleaned_flags = _sort_pairs(values, raw_flags, max_t0=max_t0)
+        try:
+            key = (base, int(tpc)); sig_v = tuple(values); sig_f = tuple(bool(f) for f in raw_flags)
+            hit = _CLEAN_CACHE.get(key)
+        except TypeError:
+            hit = None; key = None
+        if hit is not None and hit[0] == sig_v and hit[1] == sig_f and hit[2] == max_t0:
+            cleaned_values, cleaned_flags = list(hit[3]), list(hit[4])
+        else:
+            cleaned_values, cleaned_flags = _sort_pairs(values, raw_flags, max_t0=max_t0)
+            if key is not None:
+                if len(_CLEAN_CACHE) > 4096:
+                    _CLEAN_CACHE.clear()
+                _CLEAN_CACHE[key] = (tuple(cleaned_values), tuple(cleaned_flags) if len(cleaned_flags) == len(cleaned_values) else sig_f, max_t0, tuple(cleaned_values), tuple(cleaned_flags))
+                # a second call on the already-cleaned list must hit: store the cleaned signature as well
+                _CLEAN_CACHE[key] = (tuple(cleaned_values), tuple(cleaned_flags), max_t0, tuple(cleaned_values), tuple(cleaned_flags))
         t0_candidates[int(tpc)] = cleaned_values
         flags.append(cleaned_flags)
     return flags

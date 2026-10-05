@@ -14,6 +14,9 @@ except ModuleNotFoundError:  # pragma: no cover - notebook import fallback
     from M5p1.light_saturation import clip_hi, clip_hi_stack, is_scalar_clip
 
 
+import os as _os_fft
+_FFT_SCAN = _os_fft.environ.get("CLM_FFT_SCAN", "1") != "0"   # speed campaign 2026-10-05: exact FFT shift scan (set 0 for the Python loop)
+
 def append_candidate_t0(
     candidate_list: list[int],
     t0: int,
@@ -101,6 +104,11 @@ def _scan_best_shift_multi(
 ) -> tuple[int, float, np.ndarray | None]:
     # ``adc_clip``: legacy scalar, or a bound already broadcastable to ``base_block + shifted``
     # (callers resolve the per-event ceiling with clip_hi / clip_hi_stack for their block).
+    if _FFT_SCAN:
+        # exact vectorised scan (two FFT cross-correlations per non-saturating channel, strided exact evaluation for
+        # channels that can clip); identical argmin, curve differences at the float32 rounding level (2026-10-05)
+        from fast_shift_scan import scan_best_shift_fft
+        return scan_best_shift_fft(cluster_block, base_block, actual_block, error_block, search_range=int(search_range), adc_clip=adc_clip, return_curve=bool(return_curve))
     best_t0 = 0
     best_score = np.inf
     loss_curve = None

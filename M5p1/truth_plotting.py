@@ -145,7 +145,12 @@ def _read_rows_by_index(dataset: Any, indices: np.ndarray) -> np.ndarray:
     order = np.argsort(indices)
     sorted_idx = indices[order]
     unique_idx, inverse = np.unique(sorted_idx, return_inverse=True)
-    unique_rows = dataset[unique_idx]
+    lo, hi = int(unique_idx[0]), int(unique_idx[-1])
+    if (hi - lo + 1) <= 4 * unique_idx.size:          # dense: one contiguous slab read beats h5py fancy indexing by ~10x (2026-10-05)
+        slab = dataset[lo: hi + 1]
+        unique_rows = slab[unique_idx - lo]
+    else:
+        unique_rows = dataset[unique_idx]
     sorted_rows = unique_rows[inverse]
     out = np.empty(sorted_rows.shape, dtype=sorted_rows.dtype)
     out[order] = sorted_rows
